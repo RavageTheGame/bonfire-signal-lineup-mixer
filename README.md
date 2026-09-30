@@ -1,25 +1,36 @@
-# Bonfire Signal — Issue Lineup Mixer
+# Bonfire Signal · Issue lineup mixer
 
-Embeddable preview for Deb to mix Signal Pieces into an Issue 03 lineup.
+Live lineup tool for Deb: pick 1 Bonfire View, 4 Team takes, and 1 Field Note from **Notion Signal Pieces**, with an email-accurate preview.
 
-## Live URL
+## Why Vercel (not GitHub Pages)
 
-**GitHub Pages:** https://ravagethegame.github.io/bonfire-signal-lineup-mixer/
+GitHub Pages is static — it cannot hold a Notion secret or query Pieces on each open. This app hosts:
 
-## Use in Notion
+- The mixer UI (email-matched preview + masthead)
+- `GET /api/pieces` — reads Signal Pieces **live** from Notion (short in-memory cache, ~20s)
+- Refresh on window focus / tab visibility + a light 45s client poll (not a cron job)
+- `POST /api/notion-webhook` — optional Notion webhook to invalidate cache immediately
 
-1. Open [Signal Command](https://app.notion.com/p/3e59dd857da1812c82f6cc782758948e)
-2. Open **Issue Lineup Mixer** (child page) — or add an **Embed** block pointing at the Pages URL above
-3. Offline / paste option: open `signal-lineup-mixer-notion.html` (self-contained with inline Pieces; works without network fetch)
+## Env
 
-## What it does
+| Variable | Required | Purpose |
+|---|---|---|
+| `NOTION_TOKEN` | Yes for live sync | Notion internal integration secret with access to Signal Pieces |
+| `NOTION_PIECES_DATABASE_ID` | No | Defaults to Signal Pieces `7b8dc4d7-c313-4bda-923d-0ecaa0b4b610` |
+| `NOTION_WEBHOOK_SECRET` | No | If set, webhook requests must include it |
+| `PIECES_CACHE_TTL_MS` | No | Server cache TTL (default `20000`) |
 
-- Pulls candidates from Notion **Signal Pieces** (Big Idea / Team take / Field Notes)
-- Pick **1** Bonfire View, **4** Team takes, **1** Field Note
-- Preview uses Signal email layout (navy/ember, numbered sections, partner cards)
-- Bylines use partner full names (e.g. Mark → Mark Mullen)
-- **In this issue** row lists featured contributors in order of appearance
+Without `NOTION_TOKEN`, `/api/pieces` falls back to `public/pieces.json`.
 
-## Sync
+## Local
 
-`pieces.json` is harvested from live Notion via the Bonfire project agent (42 of 45 bodies as of last sync). Re-run sync after new Piece drafts land, then refresh the hosted files.
+```bash
+npm install
+NOTION_TOKEN=secret_xxx npm run dev
+```
+
+Open http://localhost:3000
+
+## Notion embed
+
+Embed the production URL on Signal Command. Picks stay in the browser (`localStorage`); Pieces stay live via the API.
