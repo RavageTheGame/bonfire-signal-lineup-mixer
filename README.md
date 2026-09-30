@@ -22,4 +22,4 @@ Embeddable preview for Deb to mix Signal Pieces into an Issue 03 lineup.
 
 ## Sync
 
-`pieces.json` is harvested from live Notion via the Bonfire project agent (26 of 45 bodies as of last sync). Re-run sync after new Piece drafts land, then refresh the hosted files.
+`pieces.json` is harvested from live Notion via the Bonfire project agent (42 of 45 bodies as of last sync). Re-run sync after new Piece drafts land, then refresh the hosted files.
