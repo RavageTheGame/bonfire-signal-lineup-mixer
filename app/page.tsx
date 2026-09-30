@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import "./mixer.css";
 
 type Piece = {
@@ -22,8 +22,30 @@ type LineupState = {
   team: string[];
 };
 
+type SectionKey = "view" | "team" | "field";
+
 const STORAGE_KEY = "bonfireSignalLiveLineup.v1";
+const OPEN_SECTIONS_KEY = "bonfireSignalLiveLineup.openSections.v1";
 const ISSUE_DEFAULT = "Issue 03 — October 2026";
+
+const DEFAULT_OPEN: Record<SectionKey, boolean> = {
+  view: true,
+  team: false,
+  field: false,
+};
+
+function loadOpenSections(): Record<SectionKey, boolean> {
+  try {
+    const saved = JSON.parse(localStorage.getItem(OPEN_SECTIONS_KEY) || "{}");
+    return {
+      view: typeof saved.view === "boolean" ? saved.view : DEFAULT_OPEN.view,
+      team: typeof saved.team === "boolean" ? saved.team : DEFAULT_OPEN.team,
+      field: typeof saved.field === "boolean" ? saved.field : DEFAULT_OPEN.field,
+    };
+  } catch {
+    return { ...DEFAULT_OPEN };
+  }
+}
 
 const PARTNERS: Record<string, { full: string; title: string; url: string }> = {
   Brett: { full: "Brett Queener", title: "Partner", url: "https://www.bonfirevc.com/team/brett-queener" },
@@ -103,9 +125,12 @@ export default function MixerPage() {
   const [candidates, setCandidates] = useState<Piece[]>([]);
   const [statusFilter, setStatusFilter] = useState("all");
   const [state, setState] = useState<LineupState>({ view: null, field: null, team: [] });
+  const [openSections, setOpenSections] = useState<Record<SectionKey, boolean>>(DEFAULT_OPEN);
   const [syncNote, setSyncNote] = useState("Loading Pieces from Notion…");
   const [toast, setToast] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const controlsRef = useRef<HTMLDivElement | null>(null);
+  const scrollLockRef = useRef<{ windowY: number; controlsY: number } | null>(null);
 
   const find = (id: string | null) => candidates.find((item) => item.id === id);
 
@@ -122,9 +147,39 @@ export default function MixerPage() {
     (flash as any).timer = window.setTimeout(() => setToast(""), 2600);
   };
 
+  // Capture scroll before a state update that may grow/shrink the preview,
+  // then restore in useLayoutEffect so the page doesn't jump.
+  const preserveScroll = (update: () => void) => {
+    scrollLockRef.current = {
+      windowY: window.scrollY,
+      controlsY: controlsRef.current?.scrollTop ?? 0,
+    };
+    update();
+  };
+
+  useLayoutEffect(() => {
+    const lock = scrollLockRef.current;
+    if (!lock) return;
+    scrollLockRef.current = null;
+    window.scrollTo({ top: lock.windowY, left: 0, behavior: "auto" });
+    if (controlsRef.current) controlsRef.current.scrollTop = lock.controlsY;
+  });
+
   const persist = (next: LineupState) => {
-    setState(next);
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    preserveScroll(() => {
+      setState(next);
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+    });
+  };
+
+  const toggleSection = (key: SectionKey) => {
+    preserveScroll(() => {
+      setOpenSections((prev) => {
+        const next = { ...prev, [key]: !prev[key] };
+        localStorage.setItem(OPEN_SECTIONS_KEY, JSON.stringify(next));
+        return next;
+      });
+    });
   };
 
   const refreshPieces = useCallback(async (reason: string) => {
@@ -162,6 +217,7 @@ export default function MixerPage() {
 
   useEffect(() => {
     setState(loadState());
+    setOpenSections(loadOpenSections());
     setHydrated(true);
     void refreshPieces("boot");
 
@@ -228,6 +284,20 @@ export default function MixerPage() {
     { key: "field" as const, title: "Field Notes from the Portfolio", hint: "Pick 1", type: "radio" as const },
   ];
 
+  const sectionSummary = (key: SectionKey) => {
+    if (key === "team") {
+      if (!state.team.length) return "None selected";
+      const titles = state.team
+        .map((id) => find(id)?.title)
+        .filter(Boolean)
+        .slice(0, 2);
+      const extra = state.team.length > 2 ? ` +${state.team.length - 2}` : "";
+      return `${state.team.length}/4 · ${titles.join(" · ")}${extra}`;
+    }
+    const selected = find(state[key]);
+    return selected ? selected.title : "None selected";
+  };
+
   const bodyOrPending = (item: Piece, fieldMode: boolean) => {
     if (item.bodyHtml && item.bodyHtml.trim()) {
       return (
@@ -284,62 +354,84 @@ export default function MixerPage() {
               Refresh now
             </button>
           </div>
-          <div className="controls">
+          <div className="controls" ref={controlsRef}>
             {!candidates.length ? (
               <div className="empty-data">No Pieces loaded yet. Waiting on live Notion sync…</div>
             ) : (
               sections.map((section) => {
                 const options = bySection(section.key);
+                const isOpen = openSections[section.key];
                 return (
-                  <div className="section-card" key={section.key}>
-                    <div className="section-title">
+                  <div className={`section-card ${isOpen ? "is-open" : ""}`} key={section.key}>
+                    <button
+                      type="button"
+                      className="section-title"
+                      aria-expanded={isOpen}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => toggleSection(section.key)}
+                    >
                       <h3>{section.title}</h3>
-                      <span>{section.hint}</span>
-                    </div>
-                    {!options.length ? (
-                      <div className="empty-data">No {section.title} candidates for this filter.</div>
+                      <span className="hint">{section.hint}</span>
+                      <span className="section-chevron" aria-hidden="true">
+                        ›
+                      </span>
+                    </button>
+                    {!isOpen ? (
+                      <p className="section-summary">
+                        <strong>{sectionSummary(section.key)}</strong>
+                      </p>
                     ) : (
-                      options.map((item) => {
-                        const checked =
-                          section.key === "team"
-                            ? state.team.includes(item.id)
-                            : state[section.key] === item.id;
-                        const disabled = section.key === "team" && !checked && teamCount >= 4;
-                        const id = `pick-${item.id}`;
-                        return (
-                          <label
-                            key={item.id}
-                            className={`option ${disabled ? "is-disabled" : ""} ${checked ? "is-on" : ""}`}
-                            data-kind={section.type}
-                            htmlFor={id}
-                          >
-                            <input
-                              id={id}
-                              name={section.type === "checkbox" ? item.id : item.section}
-                              type={section.type}
-                              value={item.id}
-                              checked={checked}
-                              disabled={disabled}
-                              onChange={(e) => handlePick(item, e.target.checked)}
-                            />
-                            <span className="check" aria-hidden="true" />
-                            <span>
-                              <span className="option-title">{item.title}</span>
-                              <span className="meta">
-                                <span className="pill">{partnerDisplayName(item) || item.partner}</span>
-                                <span className={`pill ${item.status === "Approved" ? "approved" : ""}`}>
-                                  {item.status}
+                      <div className="section-body">
+                        {!options.length ? (
+                          <div className="empty-data">No {section.title} candidates for this filter.</div>
+                        ) : (
+                          options.map((item) => {
+                            const checked =
+                              section.key === "team"
+                                ? state.team.includes(item.id)
+                                : state[section.key] === item.id;
+                            const disabled = section.key === "team" && !checked && teamCount >= 4;
+                            const id = `pick-${item.id}`;
+                            return (
+                              <label
+                                key={item.id}
+                                className={`option ${disabled ? "is-disabled" : ""} ${checked ? "is-on" : ""}`}
+                                data-kind={section.type}
+                                htmlFor={id}
+                                onMouseDown={(e) => {
+                                  // Keep page/picker scroll stable — native radio focus scrolls the page.
+                                  e.preventDefault();
+                                }}
+                              >
+                                <input
+                                  id={id}
+                                  name={section.type === "checkbox" ? item.id : item.section}
+                                  type={section.type}
+                                  value={item.id}
+                                  checked={checked}
+                                  disabled={disabled}
+                                  onChange={(e) => handlePick(item, e.target.checked)}
+                                />
+                                <span className="check" aria-hidden="true" />
+                                <span>
+                                  <span className="option-title">{item.title}</span>
+                                  <span className="meta">
+                                    <span className="pill">{partnerDisplayName(item) || item.partner}</span>
+                                    <span className={`pill ${item.status === "Approved" ? "approved" : ""}`}>
+                                      {item.status}
+                                    </span>
+                                    {item.hasBody ? (
+                                      <span className="pill">Has draft</span>
+                                    ) : (
+                                      <span className="pill missing">Body pending</span>
+                                    )}
+                                  </span>
                                 </span>
-                                {item.hasBody ? (
-                                  <span className="pill">Has draft</span>
-                                ) : (
-                                  <span className="pill missing">Body pending</span>
-                                )}
-                              </span>
-                            </span>
-                          </label>
-                        );
-                      })
+                              </label>
+                            );
+                          })
+                        )}
+                      </div>
                     )}
                   </div>
                 );
