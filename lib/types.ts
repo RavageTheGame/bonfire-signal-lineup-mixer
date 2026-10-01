@@ -17,6 +17,8 @@ export type Piece = {
 
 export type PiecesPayload = {
   syncedAt: string;
+  /** Wall-clock of this response (set even when serving a snapshot). */
+  refreshedAt?: string;
   source: "notion-live" | "fallback-json";
   pieces: Piece[];
   staleSeconds?: number;

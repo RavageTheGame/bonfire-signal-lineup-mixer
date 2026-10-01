@@ -1,16 +1,19 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { loadPiecesLive } from "@/lib/notion-pieces";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(request: NextRequest) {
   try {
-    const payload = await loadPiecesLive();
+    const force = request.nextUrl.searchParams.has("force");
+    const payload = await loadPiecesLive({ force });
     return NextResponse.json(payload, {
       headers: {
-        // Short browser/CDN cache; client also refreshes on focus.
-        "Cache-Control": "private, max-age=15, stale-while-revalidate=30",
+        // Manual refresh uses ?force=1 and cache: no-store on the client.
+        "Cache-Control": force
+          ? "private, no-store"
+          : "private, max-age=15, stale-while-revalidate=30",
       },
     });
   } catch (error) {
