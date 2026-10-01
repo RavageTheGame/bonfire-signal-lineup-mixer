@@ -171,7 +171,7 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
   const pages = await listAllPages(notion);
   const issueCache = new Map<string, string>();
 
-  const pieces = await mapWithConcurrency(pages, of, async (page) => {
+  const pieces = await mapWithConcurrency(pages, 4, async (page) => {
     const props = page.properties || {};
     const type = propSelect(props, PIECE_PROPS.type);
     if (!["Big Idea", "Team take", "Field Notes"].includes(type)) {
