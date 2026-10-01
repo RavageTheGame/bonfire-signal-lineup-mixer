@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "verify:extract": "npx --yes tsx scripts/verify-body-extract.ts"
   },
   "dependencies": {
     "@notionhq/client": "^2.3.0",
