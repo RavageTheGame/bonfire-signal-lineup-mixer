@@ -349,6 +349,14 @@ export default function MixerPage() {
             Pick one Bonfire View, four Team takes, and one Field Note from live Notion Pieces. The
             preview matches the Signal email — masthead, section rules, bylines, and the contributor row.
           </p>
+          {syncNote.includes("fallback") || syncNote.includes("Cached snapshot") ? (
+            <p className="deck" style={{ marginTop: 10 }}>
+              <a href="/connect" style={{ color: "var(--ember)", fontWeight: 700 }}>
+                Connect Notion
+              </a>{" "}
+              for live Pieces (OAuth — no API key required).
+            </p>
+          ) : null}
         </div>
         <div className="state-note" dangerouslySetInnerHTML={{ __html: syncNote }} />
       </header>

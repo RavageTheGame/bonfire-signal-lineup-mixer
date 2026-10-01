@@ -1,5 +1,6 @@
 import { Client } from "@notionhq/client";
 import { blocksToBodyHtml } from "./blocks-to-html";
+import { resolveNotionToken } from "./notion-oauth";
 import type { Piece, PiecesPayload } from "./types";
 import fallback from "../public/pieces.json";
 
@@ -21,7 +22,7 @@ export function invalidatePiecesCache(): void {
 }
 
 function notionClient(): Client | null {
-  const token = process.env.NOTION_TOKEN;
+  const token = resolveNotionToken();
   if (!token) return null;
   return new Client({ auth: token });
 }
