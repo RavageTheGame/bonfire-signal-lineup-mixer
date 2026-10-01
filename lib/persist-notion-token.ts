@@ -1,9 +1,12 @@
 /**
- * Persist the Notion access token onto the Vercel project as NOTION_TOKEN and
- * kick a production redeploy so all instances pick it up.
+ * Persist the Notion access token so live Pieces survive redeploys.
  *
- * Requires VERCEL_TOKEN (or VERCEL_API_TOKEN) with project env write access.
+ * Order:
+ * 1. Private Vercel Blob (BLOB_READ_WRITE_TOKEN) — no redeploy needed
+ * 2. Optional Vercel env upsert + redeploy when VERCEL_TOKEN is present
  */
+
+import { saveNotionTokenToBlob } from "./notion-token-store";
 
 const PROJECT_ID = process.env.VERCEL_PROJECT_ID || "prj_u7CitNNjbGWUzUInWkPqBGhwyvkK";
 const TEAM_ID = process.env.VERCEL_TEAM_ID || "team_R9mjmWCeQlqEAAjePyxZsGOI";
@@ -41,10 +44,13 @@ async function vercelFetch(path: string, init?: RequestInit) {
 
 export async function persistNotionTokenToVercel(accessToken: string): Promise<{
   envUpserted: boolean;
+  blobSaved: boolean;
   redeployId?: string;
 }> {
+  const blobSaved = await saveNotionTokenToBlob(accessToken).catch(() => false);
+
   if (!vercelToken()) {
-    return { envUpserted: false };
+    return { envUpserted: false, blobSaved };
   }
 
   // Upsert NOTION_TOKEN for production + preview
@@ -76,6 +82,7 @@ export async function persistNotionTokenToVercel(accessToken: string): Promise<{
 
   return {
     envUpserted: true,
+    blobSaved,
     redeployId: deployment?.id || deployment?.uid,
   };
 }
