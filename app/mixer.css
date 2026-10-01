@@ -117,6 +117,7 @@ h1 {
 
 .preview-shell {
   overflow: hidden;
+  overflow-anchor: none;
 }
 
 .panel {
@@ -201,8 +202,12 @@ h1 {
   padding: 12px 16px 4px;
   flex: 1 1 auto;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  /* Always reserve scrollbar space so expanding a section doesn't shrink cards. */
+  scrollbar-gutter: stable;
   overscroll-behavior: contain;
+  overflow-anchor: none;
 }
 
 .section-card {
@@ -211,7 +216,7 @@ h1 {
   border-radius: 10px;
   padding: 0;
   background: #fff;
-  overflow: hidden;
+  overflow: clip;
 }
 
 .section-title {
@@ -284,6 +289,7 @@ h1 {
 }
 
 .option {
+  position: relative;
   display: grid;
   grid-template-columns: 18px 1fr;
   gap: 10px;
@@ -293,6 +299,7 @@ h1 {
   border: 1px solid transparent;
   cursor: pointer;
   margin-bottom: 6px;
+  overflow-anchor: none;
 }
 
 .option:hover { background: var(--panel); }
@@ -303,7 +310,17 @@ h1 {
 .option.is-disabled { opacity: .45; cursor: not-allowed; }
 
 .option input {
+  /* Visually hidden, kept for a11y — clicks handled on the label. */
   position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
   opacity: 0;
   pointer-events: none;
 }
@@ -388,6 +405,7 @@ h1 {
 /* —— Email preview (matches Signal Mailchimp template) —— */
 
 .email {
+  overflow-anchor: none;
   background: var(--page);
   padding: 18px 12px 28px;
 }
