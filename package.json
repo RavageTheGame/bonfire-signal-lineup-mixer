@@ -5,10 +5,12 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start"
+    "start": "next start",
+    "verify:extract": "npx --yes tsx scripts/verify-body-extract.ts"
   },
   "dependencies": {
     "@notionhq/client": "^2.3.0",
+    "@vercel/blob": "^2.8.0",
     "next": "^15.5.4",
     "react": "^19.1.1",
     "react-dom": "^19.1.1"
