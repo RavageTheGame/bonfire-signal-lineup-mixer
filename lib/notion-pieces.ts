@@ -1,6 +1,6 @@
 import { Client } from "@notionhq/client";
 import { blocksToBodyHtml, type NotionBlock } from "./blocks-to-html";
-import { resolveNotionToken } from "./notion-oauth";
+import { ensureNotionToken } from "./notion-token-store";
 import { PIECE_PROPS, peopleNameToPartnerKey } from "./piece-schema";
 import type { Piece, PiecesPayload } from "./types";
 import fallback from "../public/pieces.json";
@@ -22,8 +22,8 @@ export function invalidatePiecesCache(): void {
   cache = null;
 }
 
-function notionClient(): Client | null {
-  const token = resolveNotionToken();
+async function notionClient(): Promise<Client | null> {
+  const token = await ensureNotionToken();
   if (!token) return null;
   return new Client({ auth: token });
 }
@@ -155,7 +155,7 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
     return { ...cache.payload, staleSeconds: Math.round((Date.now() - cache.at) / 1000) };
   }
 
-  const notion = notionClient();
+  const notion = await notionClient();
   if (!notion) {
     // Snapshot data, but stamp refreshedAt so "Refresh now" is visibly alive.
     const payload: PiecesPayload = {
@@ -171,7 +171,7 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
   const pages = await listAllPages(notion);
   const issueCache = new Map<string, string>();
 
-  const pieces = await mapWithConcurrency(pages, 4, async (page) => {
+  const pieces = await mapWithConcurrency(pages, of, async (page) => {
     const props = page.properties || {};
     const type = propSelect(props, PIECE_PROPS.type);
     if (!["Big Idea", "Team take", "Field Notes"].includes(type)) {
