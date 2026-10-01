@@ -184,34 +184,55 @@ export default function MixerPage() {
 
   const refreshPieces = useCallback(async (reason: string) => {
     try {
-      const res = await fetch(`/api/pieces?t=${Date.now()}`, { cache: "no-store" });
+      const force = reason === "manual";
+      const qs = new URLSearchParams({ t: String(Date.now()) });
+      if (force) qs.set("force", "1");
+      const res = await fetch(`/api/pieces?${qs}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const payload = await res.json();
       const next = normalizePieces(payload);
-      setCandidates(next);
       const withBody = next.filter((c) => c.hasBody).length;
-      const when = payload.syncedAt ? new Date(payload.syncedAt).toLocaleString() : "just now";
+      const checkedAt = payload.refreshedAt || payload.syncedAt;
+      const when = checkedAt ? new Date(checkedAt).toLocaleString() : "just now";
       const source =
         payload.source === "notion-live"
           ? '<span class="live">Live Notion</span>'
           : '<span class="fallback">Cached snapshot</span>';
-      setSyncNote(
-        `${source} · <strong>${next.length}</strong> Pieces · ${withBody} with draft body · updated ${when}` +
-          (reason === "focus" ? " · refreshed on focus" : "") +
-          ". Picks stay in this browser only.",
-      );
+      const reasonNote =
+        reason === "manual"
+          ? " · refreshed just now"
+          : reason === "focus"
+            ? " · refreshed on focus"
+            : "";
 
-      setState((prev) => {
-        const cleaned: LineupState = {
-          view: prev.view && next.some((p) => p.id === prev.view) ? prev.view : null,
-          field: prev.field && next.some((p) => p.id === prev.field) ? prev.field : null,
-          team: prev.team.filter((id) => next.some((p) => p.id === id)),
-        };
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
-        return cleaned;
+      preserveScroll(() => {
+        setCandidates(next);
+        setSyncNote(
+          `${source} · <strong>${next.length}</strong> Pieces · ${withBody} with draft body · checked ${when}` +
+            reasonNote +
+            ". Picks stay in this browser only.",
+        );
+        setState((prev) => {
+          const cleaned: LineupState = {
+            view: prev.view && next.some((p) => p.id === prev.view) ? prev.view : null,
+            field: prev.field && next.some((p) => p.id === prev.field) ? prev.field : null,
+            team: prev.team.filter((id) => next.some((p) => p.id === id)),
+          };
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
+          return cleaned;
+        });
       });
+
+      if (reason === "manual") {
+        flash(
+          payload.source === "notion-live"
+            ? `Refreshed from Notion · ${next.length} pieces`
+            : `Refreshed snapshot · ${next.length} pieces`,
+        );
+      }
     } catch {
       setSyncNote("Could not reach live Pieces API. Check /api/pieces.");
+      if (reason === "manual") flash("Refresh failed — try again.");
     }
   }, []);
 
@@ -345,12 +366,20 @@ export default function MixerPage() {
                 type="button"
                 className="chip"
                 aria-pressed={statusFilter === filter}
-                onClick={() => setStatusFilter(filter)}
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  preserveScroll(() => setStatusFilter(filter));
+                }}
               >
                 {filter === "all" ? "All statuses" : filter}
               </button>
             ))}
-            <button type="button" className="chip" onClick={() => void refreshPieces("manual")}>
+            <button
+              type="button"
+              className="chip"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => void refreshPieces("manual")}
+            >
               Refresh now
             </button>
           </div>
@@ -399,8 +428,19 @@ export default function MixerPage() {
                                 data-kind={section.type}
                                 htmlFor={id}
                                 onMouseDown={(e) => {
-                                  // Keep page/picker scroll stable — native radio focus scrolls the page.
+                                  // Block focus scroll-into-view without cancelling the click.
                                   e.preventDefault();
+                                }}
+                                onClick={(e) => {
+                                  // Drive selection ourselves so native radio/checkbox focus
+                                  // never yanks the page or picker scroll position.
+                                  e.preventDefault();
+                                  if (disabled) return;
+                                  if (section.key === "team") {
+                                    handlePick(item, !checked);
+                                  } else if (!checked) {
+                                    handlePick(item, true);
+                                  }
                                 }}
                               >
                                 <input
@@ -410,7 +450,10 @@ export default function MixerPage() {
                                   value={item.id}
                                   checked={checked}
                                   disabled={disabled}
-                                  onChange={(e) => handlePick(item, e.target.checked)}
+                                  tabIndex={-1}
+                                  onChange={() => {
+                                    /* selection handled on label click */
+                                  }}
                                 />
                                 <span className="check" aria-hidden="true" />
                                 <span>
