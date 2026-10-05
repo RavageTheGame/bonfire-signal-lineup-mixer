@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "verify:extract": "npx --yes tsx scripts/verify-body-extract.ts"
+    "verify:extract": "npx --yes tsx scripts/verify-body-extract.ts",
+    "verify:writeback": "npx --yes tsx scripts/verify-body-writeback.ts"
   },
   "dependencies": {
     "@notionhq/client": "^2.3.0",
