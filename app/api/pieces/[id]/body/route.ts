@@ -57,10 +57,14 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
       ok: true,
       id: pageId,
       bodyHtml: result.bodyHtml,
-      hasBody: Boolean(result.bodyHtml.trim()),
+      hasBody:
+        Boolean(result.bodyHtml.trim()) ||
+        result.optionBodies.some((o) => Boolean(o.bodyHtml.trim())),
       sectionLabel: result.sectionLabel,
       createdSection: result.createdSection,
       replacedCount: result.replacedCount,
+      optionBodies: result.optionBodies,
+      options: result.optionBodies.map((o) => o.label),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Failed to save body to Notion";
