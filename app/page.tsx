@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { EditableBody } from "./components/EditableBody";
 import "./mixer.css";
 
 type Piece = {
@@ -14,6 +15,8 @@ type Piece = {
   url: string;
   hasBody: boolean;
   bodyHtml: string;
+  options: string[];
+  optionBodies: { label: string; bodyHtml: string }[];
 };
 
 type LineupState = {
@@ -101,18 +104,30 @@ function normalizePieces(payload: { pieces?: any[] }): Piece[] {
   const list = Array.isArray(payload.pieces) ? payload.pieces : [];
   return list
     .filter((item) => TYPE_TO_SECTION[item.type])
-    .map((item) => ({
-      id: item.id,
-      title: item.title,
-      partner: item.partner || "TBD",
-      status: item.status || "Draft",
-      type: item.type,
-      section: TYPE_TO_SECTION[item.type],
-      issue: item.issue || null,
-      url: item.url,
-      hasBody: Boolean(item.hasBody && item.bodyHtml),
-      bodyHtml: item.bodyHtml || "",
-    }));
+    .map((item) => {
+      const optionBodies: Piece["optionBodies"] = Array.isArray(item.optionBodies)
+        ? item.optionBodies
+            .filter((o: any) => o && typeof o.label === "string")
+            .map((o: any) => ({ label: o.label, bodyHtml: o.bodyHtml || "" }))
+        : item.bodyHtml
+          ? [{ label: (item.options && item.options[0]) || "Draft", bodyHtml: item.bodyHtml }]
+          : [];
+      const bodyHtml = item.bodyHtml || optionBodies.find((o) => o.bodyHtml.trim())?.bodyHtml || "";
+      return {
+        id: item.id,
+        title: item.title,
+        partner: item.partner || "TBD",
+        status: item.status || "Draft",
+        type: item.type,
+        section: TYPE_TO_SECTION[item.type],
+        issue: item.issue || null,
+        url: item.url,
+        hasBody: Boolean(item.hasBody ?? (bodyHtml || optionBodies.some((o) => o.bodyHtml.trim()))),
+        bodyHtml,
+        options: Array.isArray(item.options) ? item.options : optionBodies.map((o) => o.label),
+        optionBodies,
+      };
+    });
 }
 
 function issueMetaLine(issueLabel: string) {
@@ -129,6 +144,7 @@ export default function MixerPage() {
   const [syncNote, setSyncNote] = useState("Loading Pieces from Notion…");
   const [toast, setToast] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const [liveNotion, setLiveNotion] = useState(false);
   const controlsRef = useRef<HTMLDivElement | null>(null);
   const scrollLockRef = useRef<{ windowY: number; controlsY: number } | null>(null);
 
@@ -207,6 +223,7 @@ export default function MixerPage() {
 
       preserveScroll(() => {
         setCandidates(next);
+        setLiveNotion(payload.source === "notion-live");
         setSyncNote(
           `${source} · <strong>${next.length}</strong> Pieces · ${withBody} with draft body · checked ${when}` +
             reasonNote +
@@ -319,21 +336,41 @@ export default function MixerPage() {
     return selected ? selected.title : "None selected";
   };
 
-  const bodyOrPending = (item: Piece, fieldMode: boolean) => {
-    if (item.bodyHtml && item.bodyHtml.trim()) {
-      return (
-        <div
-          className={`body-copy ${fieldMode ? "field" : ""}`}
-          dangerouslySetInnerHTML={{ __html: item.bodyHtml }}
-        />
-      );
-    }
-    return (
-      <div className="placeholder">
-        Draft body is not on this Piece page yet. Title and byline still preview as they would in the issue.
-      </div>
+  const applyBodySave = (
+    pieceId: string,
+    next: {
+      bodyHtml: string;
+      hasBody: boolean;
+      optionBodies: { label: string; bodyHtml: string }[];
+      options: string[];
+    },
+  ) => {
+    setCandidates((prev) =>
+      prev.map((piece) =>
+        piece.id === pieceId
+          ? {
+              ...piece,
+              bodyHtml: next.bodyHtml,
+              hasBody: next.hasBody,
+              optionBodies: next.optionBodies,
+              options: next.options,
+            }
+          : piece,
+      ),
     );
   };
+
+  const bodyOrPending = (item: Piece, fieldMode: boolean) => (
+    <EditableBody
+      pieceId={item.id}
+      bodyHtml={item.bodyHtml}
+      optionBodies={item.optionBodies}
+      fieldMode={fieldMode}
+      canEdit={liveNotion}
+      onSaved={(next) => applyBodySave(item.id, next)}
+      onFlash={flash}
+    />
+  );
 
   const placeholder = (label: string) => (
     <div className="placeholder">{label} is open. Pick a candidate to fill this slot.</div>
