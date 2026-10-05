@@ -15,6 +15,8 @@ type Piece = {
   url: string;
   hasBody: boolean;
   bodyHtml: string;
+  options: string[];
+  optionBodies: { label: string; bodyHtml: string }[];
 };
 
 type LineupState = {
@@ -102,18 +104,30 @@ function normalizePieces(payload: { pieces?: any[] }): Piece[] {
   const list = Array.isArray(payload.pieces) ? payload.pieces : [];
   return list
     .filter((item) => TYPE_TO_SECTION[item.type])
-    .map((item) => ({
-      id: item.id,
-      title: item.title,
-      partner: item.partner || "TBD",
-      status: item.status || "Draft",
-      type: item.type,
-      section: TYPE_TO_SECTION[item.type],
-      issue: item.issue || null,
-      url: item.url,
-      hasBody: Boolean(item.hasBody && item.bodyHtml),
-      bodyHtml: item.bodyHtml || "",
-    }));
+    .map((item) => {
+      const optionBodies: Piece["optionBodies"] = Array.isArray(item.optionBodies)
+        ? item.optionBodies
+            .filter((o: any) => o && typeof o.label === "string")
+            .map((o: any) => ({ label: o.label, bodyHtml: o.bodyHtml || "" }))
+        : item.bodyHtml
+          ? [{ label: (item.options && item.options[0]) || "Draft", bodyHtml: item.bodyHtml }]
+          : [];
+      const bodyHtml = item.bodyHtml || optionBodies.find((o) => o.bodyHtml.trim())?.bodyHtml || "";
+      return {
+        id: item.id,
+        title: item.title,
+        partner: item.partner || "TBD",
+        status: item.status || "Draft",
+        type: item.type,
+        section: TYPE_TO_SECTION[item.type],
+        issue: item.issue || null,
+        url: item.url,
+        hasBody: Boolean(item.hasBody ?? (bodyHtml || optionBodies.some((o) => o.bodyHtml.trim()))),
+        bodyHtml,
+        options: Array.isArray(item.options) ? item.options : optionBodies.map((o) => o.label),
+        optionBodies,
+      };
+    });
 }
 
 function issueMetaLine(issueLabel: string) {
@@ -322,11 +336,25 @@ export default function MixerPage() {
     return selected ? selected.title : "None selected";
   };
 
-  const applyBodySave = (pieceId: string, next: { bodyHtml: string; hasBody: boolean }) => {
+  const applyBodySave = (
+    pieceId: string,
+    next: {
+      bodyHtml: string;
+      hasBody: boolean;
+      optionBodies: { label: string; bodyHtml: string }[];
+      options: string[];
+    },
+  ) => {
     setCandidates((prev) =>
       prev.map((piece) =>
         piece.id === pieceId
-          ? { ...piece, bodyHtml: next.bodyHtml, hasBody: next.hasBody }
+          ? {
+              ...piece,
+              bodyHtml: next.bodyHtml,
+              hasBody: next.hasBody,
+              optionBodies: next.optionBodies,
+              options: next.options,
+            }
           : piece,
       ),
     );
@@ -336,6 +364,7 @@ export default function MixerPage() {
     <EditableBody
       pieceId={item.id}
       bodyHtml={item.bodyHtml}
+      optionBodies={item.optionBodies}
       fieldMode={fieldMode}
       canEdit={liveNotion}
       onSaved={(next) => applyBodySave(item.id, next)}

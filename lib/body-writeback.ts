@@ -180,6 +180,7 @@ export type UpdatePieceBodyResult = {
   sectionLabel: string | null;
   createdSection: boolean;
   replacedCount: number;
+  optionBodies: { label: string; bodyHtml: string }[];
 };
 
 /**
@@ -198,7 +199,11 @@ export async function updatePieceBodyInNotion(
     blocksToBodyHtml: (
       blocks: NotionBlock[],
       opts?: { title?: string },
-    ) => { bodyHtml: string; options: string[] };
+    ) => {
+      bodyHtml: string;
+      options: string[];
+      optionBodies: { label: string; bodyHtml: string }[];
+    };
     title?: string;
   },
 ): Promise<UpdatePieceBodyResult> {
@@ -213,7 +218,6 @@ export async function updatePieceBodyInNotion(
 
   const notionBlocks = htmlToNotionBlocks(bodyHtml);
   if (!notionBlocks.length) {
-    // Allow clearing the draft — still archive old body blocks
     await archiveBlocks(notion, target.replaceIds);
   } else {
     await archiveBlocks(notion, target.replaceIds);
@@ -222,11 +226,18 @@ export async function updatePieceBodyInNotion(
 
   const refreshed = await opts!.fetchBlockTree(pageId);
   const extracted = opts!.blocksToBodyHtml(refreshed, { title: opts?.title });
+  const savedLabel = target.sectionLabel;
+  const savedBody =
+    (savedLabel &&
+      extracted.optionBodies.find((o) => o.label.toLowerCase() === savedLabel.toLowerCase())
+        ?.bodyHtml) ||
+    bodyHtml;
 
   return {
-    bodyHtml: extracted.bodyHtml,
-    sectionLabel: target.sectionLabel,
+    bodyHtml: savedBody,
+    sectionLabel: savedLabel,
     createdSection: createdSection || Boolean(target.createdSection),
     replacedCount: target.replaceIds.length,
+    optionBodies: extracted.optionBodies,
   };
 }
