@@ -207,14 +207,19 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
 
     let bodyHtml = "";
     let options: string[] = [];
+    let optionBodies: Piece["optionBodies"] = [];
     try {
       const blocks = await fetchBlockTree(notion, page.id);
       const extracted = blocksToBodyHtml(blocks, { title });
       bodyHtml = extracted.bodyHtml;
       options = extracted.options;
+      optionBodies = extracted.optionBodies;
     } catch {
       bodyHtml = "";
     }
+
+    const hasBody =
+      Boolean(bodyHtml.trim()) || optionBodies.some((o) => Boolean(o.bodyHtml.trim()));
 
     const piece: Piece = {
       id: page.id,
@@ -225,9 +230,10 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
       issue,
       issueId,
       url: page.url || `https://www.notion.so/${page.id.replace(/-/g, "")}`,
-      hasBody: Boolean(bodyHtml.trim()),
+      hasBody,
       bodyHtml,
       options,
+      optionBodies,
       lastEditedTime: page.last_edited_time,
     };
     return piece;
