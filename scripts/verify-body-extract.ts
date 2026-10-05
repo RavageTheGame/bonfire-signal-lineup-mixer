@@ -78,7 +78,7 @@ const field = [
         type: "paragraph",
         paragraph: {
           rich_text: [{ plain_text: "A portfolio company entered a pricing session." }],
-        },
+      },
       },
     ],
   },
@@ -97,9 +97,39 @@ const field = [
   },
 ] as any[];
 
+const fieldMulti = [
+  {
+    id: "1",
+    type: "heading_2",
+    has_children: true,
+    heading_2: { rich_text: [{ plain_text: "Option 1" }], is_toggleable: true },
+    children: [
+      {
+        id: "1a",
+        type: "paragraph",
+        paragraph: { rich_text: [{ plain_text: "First option copy." }] },
+      },
+    ],
+  },
+  {
+    id: "2",
+    type: "heading_2",
+    has_children: true,
+    heading_2: { rich_text: [{ plain_text: "Option 2" }], is_toggleable: true },
+    children: [
+      {
+        id: "2a",
+        type: "paragraph",
+        paragraph: { rich_text: [{ plain_text: "Second option copy." }] },
+      },
+    ],
+  },
+] as any[];
+
 const p = blocksToBodyHtml(price, { title: "Price the work, not the headcount" });
 const v = blocksToBodyHtml(vibe, { title: "Vibe coding breaks at multiplayer" });
 const f = blocksToBodyHtml(field);
+const m = blocksToBodyHtml(fieldMulti);
 
 const checks: [string, boolean][] = [
   ["price has seat pricing", p.bodyHtml.includes("Seat pricing")],
@@ -114,11 +144,14 @@ const checks: [string, boolean][] = [
   ["vibe strips Sources", !v.bodyHtml.includes("Pulled from Idea")],
   ["field option body", f.bodyHtml.includes("portfolio company")],
   ["field strips provenance", !f.bodyHtml.includes("Should not appear")],
+  ["multi has two options", m.optionBodies.length === 2],
+  ["multi defaults to option 1", m.bodyHtml.includes("First option") && !m.bodyHtml.includes("Second option")],
+  ["multi keeps option 2 separate", m.optionBodies[1]?.bodyHtml.includes("Second option") === true],
   ["people Jen", peopleNameToPartnerKey("Jennifer Richard") === "Jen"],
   ["people Brett", peopleNameToPartnerKey("Brett Queener") === "Brett"],
   ["people Jim", peopleNameToPartnerKey("Jim Andelman") === "Jim"],
 ];
 
 const failed = checks.filter(([, ok]) => !ok);
-console.log(JSON.stringify({ ok: failed.length === 0, checks, p: p.bodyHtml, v: v.bodyHtml, f: f.bodyHtml }, null, 2));
+console.log(JSON.stringify({ ok: failed.length === 0, checks, p: p.bodyHtml, v: v.bodyHtml, f: f.bodyHtml, m }, null, 2));
 if (failed.length) process.exit(1);
