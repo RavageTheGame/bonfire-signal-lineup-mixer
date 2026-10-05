@@ -28,6 +28,29 @@ async function notionClient(): Promise<Client | null> {
   return new Client({ auth: token });
 }
 
+/** Public Notion client for write routes (body save, etc.). */
+export async function ensureNotionClient(): Promise<Client | null> {
+  return notionClient();
+}
+
+/** Expand a Piece page (or block) tree for extract / writeback. */
+export async function fetchPieceBlockTree(
+  notion: Client,
+  rootId: string,
+): Promise<NotionBlock[]> {
+  return fetchBlockTree(notion, rootId);
+}
+
+export async function loadPieceTitle(notion: Client, pageId: string): Promise<string | null> {
+  try {
+    const page = await notion.pages.retrieve({ page_id: pageId });
+    const props = (page as any).properties || {};
+    return propTitle(props, PIECE_PROPS.title);
+  } catch {
+    return null;
+  }
+}
+
 function propSelect(props: Record<string, any>, name: string): string {
   const p = props[name];
   if (!p) return "";
