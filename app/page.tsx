@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
+import { EditableBody } from "./components/EditableBody";
 import "./mixer.css";
 
 type Piece = {
@@ -129,6 +130,7 @@ export default function MixerPage() {
   const [syncNote, setSyncNote] = useState("Loading Pieces from Notion…");
   const [toast, setToast] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const [liveNotion, setLiveNotion] = useState(false);
   const controlsRef = useRef<HTMLDivElement | null>(null);
   const scrollLockRef = useRef<{ windowY: number; controlsY: number } | null>(null);
 
@@ -207,6 +209,7 @@ export default function MixerPage() {
 
       preserveScroll(() => {
         setCandidates(next);
+        setLiveNotion(payload.source === "notion-live");
         setSyncNote(
           `${source} · <strong>${next.length}</strong> Pieces · ${withBody} with draft body · checked ${when}` +
             reasonNote +
@@ -319,21 +322,26 @@ export default function MixerPage() {
     return selected ? selected.title : "None selected";
   };
 
-  const bodyOrPending = (item: Piece, fieldMode: boolean) => {
-    if (item.bodyHtml && item.bodyHtml.trim()) {
-      return (
-        <div
-          className={`body-copy ${fieldMode ? "field" : ""}`}
-          dangerouslySetInnerHTML={{ __html: item.bodyHtml }}
-        />
-      );
-    }
-    return (
-      <div className="placeholder">
-        Draft body is not on this Piece page yet. Title and byline still preview as they would in the issue.
-      </div>
+  const applyBodySave = (pieceId: string, next: { bodyHtml: string; hasBody: boolean }) => {
+    setCandidates((prev) =>
+      prev.map((piece) =>
+        piece.id === pieceId
+          ? { ...piece, bodyHtml: next.bodyHtml, hasBody: next.hasBody }
+          : piece,
+      ),
     );
   };
+
+  const bodyOrPending = (item: Piece, fieldMode: boolean) => (
+    <EditableBody
+      pieceId={item.id}
+      bodyHtml={item.bodyHtml}
+      fieldMode={fieldMode}
+      canEdit={liveNotion}
+      onSaved={(next) => applyBodySave(item.id, next)}
+      onFlash={flash}
+    />
+  );
 
   const placeholder = (label: string) => (
     <div className="placeholder">{label} is open. Pick a candidate to fill this slot.</div>

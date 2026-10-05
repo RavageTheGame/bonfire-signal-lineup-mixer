@@ -30,8 +30,8 @@ export default function ConnectNotionPage() {
       const workspace = payload.workspaceName || payload.workspaceId || "Notion";
       setStatus(
         payload.persisted
-          ? `Connected to ${workspace}. Token saved — redeploying. Open the mixer and Refresh now in about a minute.`
-          : `Connected to ${workspace} for this instance. Ask ops to confirm NOTION_TOKEN is on Vercel if Refresh still shows Cached snapshot.`,
+          ? `Connected to ${workspace}. Token saved durably. Open the mixer and hit Refresh now.`
+          : `Connected to ${workspace} for this instance. Ask ops to confirm Blob storage or NOTION_TOKEN if Refresh still shows Cached snapshot.`,
       );
     } catch (err) {
       setStatus(err instanceof Error ? err.message : "Exchange failed");
