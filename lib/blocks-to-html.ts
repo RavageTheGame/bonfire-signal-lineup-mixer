@@ -25,6 +25,11 @@ export type BodyExtractOptions = {
   title?: string;
 };
 
+export type OptionBody = {
+  label: string;
+  bodyHtml: string;
+};
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
@@ -81,9 +86,7 @@ function isTitleEcho(html: string, title: string | undefined): boolean {
   const plain = normalizeComparable(html);
   const want = normalizeComparable(title);
   if (!plain || !want) return false;
-  // Exact match, or a single bold wrapper around the title
   if (plain === want) return true;
-  // "**Title**" only — no extra sentence
   if (plain.length <= want.length + 4 && plain.includes(want)) {
     const stripped = html.replace(/<\/?strong>/gi, "").replace(/<\/?p>/gi, "").trim();
     return normalizeComparable(stripped) === want;
@@ -112,11 +115,10 @@ function renderLeaf(block: NotionBlock): string | null {
     case "numbered_list_item":
       return `<p>${inner}</p>`;
     case "callout":
-      return null; // editorial chrome, not email body
+      return null;
     case "divider":
       return null;
     case "toggle":
-      // Toggle summary is not body; children handled by walker
       return null;
     default:
       if (isHeading(type)) return null;
@@ -124,9 +126,19 @@ function renderLeaf(block: NotionBlock): string | null {
   }
 }
 
+function preferDefaultOption(options: OptionBody[]): OptionBody | null {
+  if (!options.length) return null;
+  const draft = options.find((o) => /^draft body$/i.test(o.label));
+  if (draft?.bodyHtml.trim()) return draft;
+  const withCopy = options.find((o) => o.bodyHtml.trim());
+  return withCopy || options[0];
+}
+
 /**
  * Convert a Notion block tree into email-preview HTML.
  * Prefers Draft body / Option N sections; drops Sources / Confidentiality / etc.
+ * When multiple Option / Draft body sections exist, each is kept separately so
+ * the mixer can toggle between them.
  */
 export function blocksToBodyHtml(
   blocks: NotionBlock[],
@@ -134,22 +146,34 @@ export function blocksToBodyHtml(
 ): {
   bodyHtml: string;
   options: string[];
+  optionBodies: OptionBody[];
 } {
-  const options: string[] = [];
-  const htmlParts: string[] = [];
+  const optionBodies: OptionBody[] = [];
+  const legacyParts: string[] = [];
   let skipMeta = false;
-  let inBodySection = false;
   let sawBodySectionLabel = false;
-  let titleEchoPending = Boolean(opts.title?.trim());
+  let activeOption: { label: string; parts: string[]; titleEchoPending: boolean } | null = null;
 
-  const pushHtml = (html: string | null) => {
+  const pushTo = (
+    target: { parts: string[]; titleEchoPending: boolean },
+    html: string | null,
+  ) => {
     if (!html?.trim()) return;
-    if (titleEchoPending && isTitleEcho(html, opts.title)) {
-      titleEchoPending = false;
+    if (target.titleEchoPending && isTitleEcho(html, opts.title)) {
+      target.titleEchoPending = false;
       return;
     }
-    titleEchoPending = false;
-    htmlParts.push(html);
+    target.titleEchoPending = false;
+    target.parts.push(html);
+  };
+
+  const flushActive = () => {
+    if (!activeOption) return;
+    optionBodies.push({
+      label: activeOption.label,
+      bodyHtml: activeOption.parts.join("\n"),
+    });
+    activeOption = null;
   };
 
   const walk = (list: NotionBlock[], depth: number) => {
@@ -164,70 +188,91 @@ export function blocksToBodyHtml(
         const label = plain || (type === "toggle" ? blockPlain(block) : "");
 
         if (label && isStopSection(label)) {
+          flushActive();
           skipMeta = true;
-          inBodySection = false;
-          // Do not descend into meta toggles
           continue;
         }
 
         if (label && isBodySection(label)) {
+          flushActive();
           skipMeta = false;
-          inBodySection = true;
           sawBodySectionLabel = true;
-          options.push(label);
+          activeOption = {
+            label,
+            parts: [],
+            titleEchoPending: Boolean(opts.title?.trim()),
+          };
+          if (children.length) walk(children, depth + 1);
+          // End this section after walking its children (toggle/heading children)
+          // Sibling content after a non-toggle heading is handled while activeOption stays set
+          // until the next body/stop heading — but for toggleables we already consumed kids.
+          if (children.length && (type === "toggle" || data.is_toggleable || block.has_children)) {
+            flushActive();
+          }
+          continue;
+        }
+
+        if (skipMeta) continue;
+
+        if (activeOption && label) {
+          pushTo(activeOption, `<p><strong>${escapeHtml(label)}</strong></p>`);
           if (children.length) walk(children, depth + 1);
           continue;
         }
 
-        if (skipMeta) {
-          // Still allow a later Draft body / Option section
-          continue;
-        }
-
-        // Non-labeled heading inside an active body section → bold line, then kids
-        if (inBodySection && label) {
-          pushHtml(`<p><strong>${escapeHtml(label)}</strong></p>`);
-          if (children.length) walk(children, depth + 1);
-          continue;
-        }
-
-        // Toggle without a recognized label: if it has paragraph children and we
-        // haven't entered a body section yet, treat as body when it's the only content.
         if (type === "toggle" || toggleableHeading) {
           if (children.length) walk(children, depth + 1);
           continue;
         }
 
-        // Plain heading before any body section — ignore as chrome
         continue;
       }
 
-      if (skipMeta && !inBodySection) continue;
+      if (skipMeta && !activeOption) continue;
 
-      // Before the first Draft body / Option label, only keep top-level paragraphs
-      // when the page has no labeled body section at all (legacy layout).
-      if (!inBodySection && sawBodySectionLabel) continue;
+      if (!activeOption && sawBodySectionLabel) continue;
 
-      if (!inBodySection && !sawBodySectionLabel) {
-        if (type !== "paragraph" && type !== "quote" && type !== "bulleted_list_item" && type !== "numbered_list_item") {
+      if (!activeOption && !sawBodySectionLabel) {
+        if (
+          type !== "paragraph" &&
+          type !== "quote" &&
+          type !== "bulleted_list_item" &&
+          type !== "numbered_list_item"
+        ) {
           if (children.length) walk(children, depth + 1);
           continue;
         }
+        const leaf = renderLeaf(block);
+        if (leaf?.trim()) {
+          // Title echo strip for legacy top-level
+          if (opts.title && isTitleEcho(leaf, opts.title) && !legacyParts.length) {
+            // skip
+          } else {
+            legacyParts.push(leaf);
+          }
+        }
+        if (children.length) walk(children, depth + 1);
+        continue;
       }
 
-      pushHtml(renderLeaf(block));
-      if (children.length) walk(children, depth + 1);
+      if (activeOption) {
+        pushTo(activeOption, renderLeaf(block));
+        if (children.length) walk(children, depth + 1);
+      }
     }
   };
 
   walk(blocks, 0);
+  flushActive();
 
-  // Second pass: if we only captured chrome because body was nested and unlabeled,
-  // htmlParts may still be empty while options listed sections — already handled
-  // by walking children of body sections.
+  if (!optionBodies.length && legacyParts.length) {
+    optionBodies.push({ label: "Draft", bodyHtml: legacyParts.join("\n") });
+  }
 
+  const preferred = preferDefaultOption(optionBodies);
   return {
-    bodyHtml: htmlParts.join("\n"),
-    options,
+    bodyHtml: preferred?.bodyHtml || "",
+    options: optionBodies.map((o) => o.label),
+    optionBodies,
   };
 }
