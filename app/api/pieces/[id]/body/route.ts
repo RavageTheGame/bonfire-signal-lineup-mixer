@@ -7,6 +7,7 @@ import {
   fetchPieceBlockTree,
   invalidatePiecesCache,
   loadPieceTitle,
+  loadPiecesLive,
 } from "@/lib/notion-pieces";
 
 export const dynamic = "force-dynamic";
@@ -43,6 +44,13 @@ export async function PATCH(request: NextRequest, context: RouteContext) {
   const preferredSection = payload.sectionLabel ? String(payload.sectionLabel) : null;
 
   try {
+    const current = await loadPiecesLive({ force: true });
+    if (!current.issue || current.issueError || !current.pieces.some((piece) => piece.id === pageId)) {
+      return NextResponse.json(
+        { error: "This piece is no longer eligible for the current issue. Refresh the mixer before editing." },
+        { status: 409 },
+      );
+    }
     const title = await loadPieceTitle(notion, pageId);
     const result = await updatePieceBodyInNotion(notion, pageId, bodyHtml, {
       preferredSection,

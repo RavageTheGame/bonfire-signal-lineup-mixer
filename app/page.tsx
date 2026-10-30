@@ -2,52 +2,41 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EditableBody } from "./components/EditableBody";
+import { MIXER_SLOTS, cleanLineup, currentCandidates, emptyLineup, recommendedLineup, slotForPiece, type LineupState, type SlotKey } from "@/lib/issue-workflow";
+import type { Piece, SignalIssue, PiecesPayload } from "@/lib/types";
 import "./mixer.css";
 
-type Piece = {
-  id: string;
-  title: string;
-  partner: string;
-  status: string;
-  type: string;
-  section: "view" | "team" | "field";
-  issue: string | null;
-  url: string;
-  hasBody: boolean;
-  bodyHtml: string;
-  options: string[];
-  optionBodies: { label: string; bodyHtml: string }[];
-};
+const COMMAND_URL = "https://app.notion.com/p/Signal-Command-3e59dd857da1812c82f6cc782758948e";
+const ARCHIVE_URL = "https://app.notion.com/p/Signal-Command-Databases-3e69dd857da180fb96c7d8ee411a359a";
+const STORAGE_PREFIX = "bonfireSignalLineup.issue.v2.";
+const OPEN_SECTIONS_KEY = "bonfireSignalLineup.openSlots.v2";
+const DEFAULT_OPEN: Record<SlotKey, boolean> = { view: true, team1: false, team2: false, team3: false, team4: false, field: false };
 
-type LineupState = {
-  view: string | null;
-  field: string | null;
-  team: string[];
-};
-
-type SectionKey = "view" | "team" | "field";
-
-const STORAGE_KEY = "bonfireSignalLiveLineup.v1";
-const OPEN_SECTIONS_KEY = "bonfireSignalLiveLineup.openSections.v1";
-const ISSUE_DEFAULT = "Issue 03 — October 2026";
-
-const DEFAULT_OPEN: Record<SectionKey, boolean> = {
-  view: true,
-  team: false,
-  field: false,
-};
-
-function loadOpenSections(): Record<SectionKey, boolean> {
+function loadOpenSections(): Record<SlotKey, boolean> {
   try {
     const saved = JSON.parse(localStorage.getItem(OPEN_SECTIONS_KEY) || "{}");
-    return {
-      view: typeof saved.view === "boolean" ? saved.view : DEFAULT_OPEN.view,
-      team: typeof saved.team === "boolean" ? saved.team : DEFAULT_OPEN.team,
-      field: typeof saved.field === "boolean" ? saved.field : DEFAULT_OPEN.field,
-    };
-  } catch {
-    return { ...DEFAULT_OPEN };
-  }
+    return Object.fromEntries(MIXER_SLOTS.map(({ key }) => [key, typeof saved[key] === "boolean" ? saved[key] : DEFAULT_OPEN[key]])) as Record<SlotKey, boolean>;
+  } catch { return { ...DEFAULT_OPEN }; }
+}
+
+function loadLineup(issue: SignalIssue, pieces: Piece[]): LineupState {
+  try {
+    const saved = JSON.parse(localStorage.getItem(STORAGE_PREFIX + issue.id) || "null");
+    if (saved?.edited === true) return cleanLineup(saved.lineup, pieces);
+  } catch { /* A malformed or unavailable browser store must not leak the old issue. */ }
+  return issue.generationStatus === "Ready" ? recommendedLineup(pieces) : emptyLineup();
+}
+
+function dateLabel(date: string | null | undefined): string {
+  if (!date) return "Not set";
+  const parsed = new Date(`${date.slice(0, 10)}T12:00:00Z`);
+  return Number.isFinite(parsed.getTime())
+    ? parsed.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "UTC" })
+    : "Not set";
+}
+
+function issueMetaLine(label: string) {
+  return label.replace(/\s+[—–-]\s+/g, " · ");
 }
 
 const PARTNERS: Record<string, { full: string; title: string; url: string }> = {
@@ -65,25 +54,6 @@ const PARTNERS: Record<string, { full: string; title: string; url: string }> = {
   TBD: { full: "TBD", title: "", url: "" },
 };
 
-const TYPE_TO_SECTION: Record<string, Piece["section"]> = {
-  "Big Idea": "view",
-  "Team take": "team",
-  "Field Notes": "field",
-};
-
-function loadState(): LineupState {
-  try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-    return {
-      view: typeof saved.view === "string" ? saved.view : null,
-      field: typeof saved.field === "string" ? saved.field : null,
-      team: Array.isArray(saved.team) ? saved.team.slice(0, 4) : [],
-    };
-  } catch {
-    return { view: null, field: null, team: [] };
-  }
-}
-
 function partnerMeta(key: string) {
   return PARTNERS[key] || { full: key || "Bonfire team", title: "", url: "" };
 }
@@ -100,79 +70,35 @@ function partnerDisplayName(item: Piece | undefined | null) {
   return partnerMeta(item.partner).full;
 }
 
-function normalizePieces(payload: { pieces?: any[] }): Piece[] {
-  const list = Array.isArray(payload.pieces) ? payload.pieces : [];
-  return list
-    .filter((item) => TYPE_TO_SECTION[item.type])
-    .map((item) => {
-      const optionBodies: Piece["optionBodies"] = Array.isArray(item.optionBodies)
-        ? item.optionBodies
-            .filter((o: any) => o && typeof o.label === "string")
-            .map((o: any) => ({ label: o.label, bodyHtml: o.bodyHtml || "" }))
-        : item.bodyHtml
-          ? [{ label: (item.options && item.options[0]) || "Draft", bodyHtml: item.bodyHtml }]
-          : [];
-      const bodyHtml = item.bodyHtml || optionBodies.find((o) => o.bodyHtml.trim())?.bodyHtml || "";
-      return {
-        id: item.id,
-        title: item.title,
-        partner: item.partner || "TBD",
-        status: item.status || "Draft",
-        type: item.type,
-        section: TYPE_TO_SECTION[item.type],
-        issue: item.issue || null,
-        url: item.url,
-        hasBody: Boolean(item.hasBody ?? (bodyHtml || optionBodies.some((o) => o.bodyHtml.trim()))),
-        bodyHtml,
-        options: Array.isArray(item.options) ? item.options : optionBodies.map((o) => o.label),
-        optionBodies,
-      };
-    });
-}
-
-function issueMetaLine(issueLabel: string) {
-  // "Issue 03 — October 2026" → "Issue 03 · October 2026 · 6 min read"
-  const cleaned = issueLabel.replace(/\s+[—–-]\s+/g, " · ");
-  return `${cleaned} · 6 min read`;
-}
 
 export default function MixerPage() {
   const [candidates, setCandidates] = useState<Piece[]>([]);
+  const [issue, setIssue] = useState<SignalIssue | null>(null);
+  const [issueError, setIssueError] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
-  const [state, setState] = useState<LineupState>({ view: null, field: null, team: [] });
-  const [openSections, setOpenSections] = useState<Record<SectionKey, boolean>>(DEFAULT_OPEN);
-  const [syncNote, setSyncNote] = useState("Loading Pieces from Notion…");
+  const [state, setState] = useState<LineupState>(emptyLineup);
+  const [openSections, setOpenSections] = useState(DEFAULT_OPEN);
+  const [syncNote, setSyncNote] = useState("Loading the current issue from Notion…");
   const [toast, setToast] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [liveNotion, setLiveNotion] = useState(false);
   const controlsRef = useRef<HTMLDivElement | null>(null);
   const scrollLockRef = useRef<{ windowY: number; controlsY: number } | null>(null);
+  const requestVersion = useRef(0);
+  const refreshInFlight = useRef(false);
+  const flashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const find = (id: string | null) => candidates.find((item) => item.id === id);
-
-  const bySection = (section: Piece["section"]) =>
-    candidates.filter((item) => {
-      if (item.section !== section) return false;
-      if (statusFilter !== "all" && item.status !== statusFilter) return false;
-      return true;
-    });
-
+  const bySlot = (key: SlotKey) => candidates.filter((item) => slotForPiece(item)?.key === key && (statusFilter === "all" || item.status === statusFilter));
   const flash = (message: string) => {
     setToast(message);
-    window.clearTimeout((flash as any).timer);
-    (flash as any).timer = window.setTimeout(() => setToast(""), 2600);
+    if (flashTimer.current) clearTimeout(flashTimer.current);
+    flashTimer.current = setTimeout(() => setToast(""), 3000);
   };
-
-  // Capture scroll before a state update that may grow/shrink the preview,
-  // then restore in useLayoutEffect so the page doesn't jump.
   const preserveScroll = (update: () => void) => {
-    scrollLockRef.current = {
-      windowY: window.scrollY,
-      controlsY: controlsRef.current?.scrollTop ?? 0,
-    };
+    scrollLockRef.current = { windowY: window.scrollY, controlsY: controlsRef.current?.scrollTop ?? 0 };
     update();
   };
-
   useLayoutEffect(() => {
     const lock = scrollLockRef.current;
     if (!lock) return;
@@ -182,442 +108,170 @@ export default function MixerPage() {
   });
 
   const persist = (next: LineupState) => {
-    preserveScroll(() => {
-      setState(next);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    });
+    if (!issue) return;
+    preserveScroll(() => setState(next));
+    try { localStorage.setItem(STORAGE_PREFIX + issue.id, JSON.stringify({ edited: true, lineup: next })); }
+    catch { flash("This browser cannot save picks. Keep this tab open while reviewing."); }
   };
-
-  const toggleSection = (key: SectionKey) => {
-    preserveScroll(() => {
-      setOpenSections((prev) => {
-        const next = { ...prev, [key]: !prev[key] };
-        localStorage.setItem(OPEN_SECTIONS_KEY, JSON.stringify(next));
-        return next;
-      });
+  const toggleSection = (key: SlotKey) => preserveScroll(() => {
+    setOpenSections((previous) => {
+      const next = { ...previous, [key]: !previous[key] };
+      try { localStorage.setItem(OPEN_SECTIONS_KEY, JSON.stringify(next)); } catch { /* Optional UI preference. */ }
+      return next;
     });
-  };
+  });
 
   const refreshPieces = useCallback(async (reason: string) => {
+    if (refreshInFlight.current) return;
+    refreshInFlight.current = true;
+    const version = ++requestVersion.current;
     try {
-      const force = reason === "manual";
-      const qs = new URLSearchParams({ t: String(Date.now()) });
-      if (force) qs.set("force", "1");
-      const res = await fetch(`/api/pieces?${qs}`, { cache: "no-store" });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const payload = await res.json();
-      const next = normalizePieces(payload);
-      const withBody = next.filter((c) => c.hasBody).length;
-      const checkedAt = payload.refreshedAt || payload.syncedAt;
-      const when = checkedAt ? new Date(checkedAt).toLocaleString() : "just now";
-      const source =
-        payload.source === "notion-live"
-          ? '<span class="live">Live Notion</span>'
-          : '<span class="fallback">Cached snapshot</span>';
-      const reasonNote =
-        reason === "manual"
-          ? " · refreshed just now"
-          : reason === "focus"
-            ? " · refreshed on focus"
-            : "";
-
-      preserveScroll(() => {
-        setCandidates(next);
-        setLiveNotion(payload.source === "notion-live");
-        setSyncNote(
-          `${source} · <strong>${next.length}</strong> Pieces · ${withBody} with draft body · checked ${when}` +
-            reasonNote +
-            ". Picks stay in this browser only.",
-        );
-        setState((prev) => {
-          const cleaned: LineupState = {
-            view: prev.view && next.some((p) => p.id === prev.view) ? prev.view : null,
-            field: prev.field && next.some((p) => p.id === prev.field) ? prev.field : null,
-            team: prev.team.filter((id) => next.some((p) => p.id === id)),
-          };
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
-          return cleaned;
-        });
-      });
-
-      if (reason === "manual") {
-        flash(
-          payload.source === "notion-live"
-            ? `Refreshed from Notion · ${next.length} pieces`
-            : `Refreshed snapshot · ${next.length} pieces`,
-        );
-      }
+      const response = await fetch(`/api/pieces?${reason === "manual" ? "force=1&" : ""}t=${Date.now()}`, { cache: "no-store" });
+      if (!response.ok) throw new Error("Could not refresh the current issue.");
+      const payload: PiecesPayload = await response.json();
+      if (version !== requestVersion.current) return;
+      const next = currentCandidates(payload.pieces || [], payload.issue || null);
+      setIssue(payload.issue || null);
+      setIssueError(payload.issueError || "");
+      setCandidates(next);
+      setState(payload.issue ? loadLineup(payload.issue, next) : emptyLineup());
+      setLiveNotion(payload.source === "notion-live");
+      const checked = payload.refreshedAt || payload.syncedAt;
+      setSyncNote(`${payload.source === "notion-live" ? "Live Notion" : "Notion disconnected"} · ${next.length} current issue candidates · checked ${new Date(checked).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}. Picks are saved for this issue in this browser.`);
+      if (reason === "manual") setToast("Current issue refreshed.");
     } catch {
-      setSyncNote("Could not reach live Pieces API. Check /api/pieces.");
-      if (reason === "manual") flash("Refresh failed — try again.");
+      if (version !== requestVersion.current) return;
+      setCandidates([]);
+      setState(emptyLineup());
+      setIssue(null);
+      setIssueError("The current issue could not be loaded. Refresh or open Signal Command to check the connection.");
+      setSyncNote("Refresh unavailable. Previous issue content stays hidden.");
+    } finally {
+      if (version === requestVersion.current) refreshInFlight.current = false;
     }
   }, []);
 
   useEffect(() => {
-    setState(loadState());
     setOpenSections(loadOpenSections());
     setHydrated(true);
     void refreshPieces("boot");
-
     const onFocus = () => void refreshPieces("focus");
-    const onVis = () => {
-      if (document.visibilityState === "visible") void refreshPieces("focus");
-    };
+    const onVisibility = () => { if (document.visibilityState === "visible") void refreshPieces("focus"); };
     window.addEventListener("focus", onFocus);
-    document.addEventListener("visibilitychange", onVis);
-    // Light polling as a safety net (not a cron job) — keeps Notion embed warm.
-    const poll = window.setInterval(() => void refreshPieces("poll"), 45_000);
+    document.addEventListener("visibilitychange", onVisibility);
+    const poll = setInterval(() => void refreshPieces("poll"), 45_000);
     return () => {
+      requestVersion.current++;
+      refreshInFlight.current = false;
       window.removeEventListener("focus", onFocus);
-      document.removeEventListener("visibilitychange", onVis);
-      window.clearInterval(poll);
+      document.removeEventListener("visibilitychange", onVisibility);
+      clearInterval(poll);
+      if (flashTimer.current) clearTimeout(flashTimer.current);
     };
   }, [refreshPieces]);
 
-  if (!hydrated) {
-    return (
-      <main className="app">
-        <p className="deck">Loading mixer…</p>
-      </main>
-    );
-  }
+  if (!hydrated) return <main className="app"><p className="deck">Loading the current issue…</p></main>;
 
-  const teamCount = state.team.length;
   const view = find(state.view);
   const field = find(state.field);
-  const team = state.team.map(find).filter(Boolean) as Piece[];
-  const isComplete = Boolean(view && field && team.length === 4);
-
-  const contributorNames = () => {
-    const ordered: string[] = [];
-    const push = (item?: Piece | null) => {
-      const name = partnerDisplayName(item);
-      if (name && !ordered.includes(name)) ordered.push(name);
-    };
-    push(view);
-    team.forEach(push);
-    push(field);
-    return ordered;
+  const team = [state.team1, state.team2, state.team3, state.team4].map(find).filter(Boolean) as Piece[];
+  const teamCount = team.length;
+  const isComplete = Boolean(view && field && teamCount === 4 && new Set(team.map((p) => p.partner)).size === 4);
+  const names = [...new Set([view, ...team, field].map(partnerDisplayName).filter(Boolean))];
+  const filledSlots = MIXER_SLOTS.filter(({ key }) => state[key]).length;
+  const handlePick = (key: SlotKey, item: Piece) => {
+    const next = cleanLineup({ ...state, [key]: item.id }, candidates);
+    if (next[key] !== item.id) { flash("Choose a different contributor for this team slot."); return; }
+    persist(next);
   };
-
-  const names = contributorNames();
-
-  const handlePick = (item: Piece, checked: boolean) => {
-    if (item.section === "team") {
-      let nextTeam = [...state.team];
-      if (checked) {
-        if (!nextTeam.includes(item.id) && nextTeam.length < 4) nextTeam.push(item.id);
-      } else {
-        nextTeam = nextTeam.filter((id) => id !== item.id);
-      }
-      persist({ ...state, team: nextTeam });
-    } else {
-      persist({ ...state, [item.section]: item.id });
-    }
+  const applyBodySave = (pieceId: string, next: { bodyHtml: string; hasBody: boolean; optionBodies: { label: string; bodyHtml: string }[]; options: string[] }) => {
+    setCandidates((previous) => previous.map((piece) => piece.id === pieceId ? { ...piece, ...next } : piece));
   };
-
-  const sections = [
-    { key: "view" as const, title: "The Bonfire View", hint: "Pick 1", type: "radio" as const },
-    { key: "team" as const, title: "From the Bonfire Team", hint: "Pick exactly 4", type: "checkbox" as const },
-    { key: "field" as const, title: "Field Notes from the Portfolio", hint: "Pick 1", type: "radio" as const },
-  ];
-
-  const sectionSummary = (key: SectionKey) => {
-    if (key === "team") {
-      if (!state.team.length) return "None selected";
-      const titles = state.team
-        .map((id) => find(id)?.title)
-        .filter(Boolean)
-        .slice(0, 2);
-      const extra = state.team.length > 2 ? ` +${state.team.length - 2}` : "";
-      return `${state.team.length}/4 · ${titles.join(" · ")}${extra}`;
-    }
-    const selected = find(state[key]);
-    return selected ? selected.title : "None selected";
-  };
-
-  const applyBodySave = (
-    pieceId: string,
-    next: {
-      bodyHtml: string;
-      hasBody: boolean;
-      optionBodies: { label: string; bodyHtml: string }[];
-      options: string[];
-    },
-  ) => {
-    setCandidates((prev) =>
-      prev.map((piece) =>
-        piece.id === pieceId
-          ? {
-              ...piece,
-              bodyHtml: next.bodyHtml,
-              hasBody: next.hasBody,
-              optionBodies: next.optionBodies,
-              options: next.options,
-            }
-          : piece,
-      ),
-    );
-  };
-
-  const bodyOrPending = (item: Piece, fieldMode: boolean) => (
-    <EditableBody
-      pieceId={item.id}
-      bodyHtml={item.bodyHtml}
-      optionBodies={item.optionBodies}
-      fieldMode={fieldMode}
-      canEdit={liveNotion}
-      onSaved={(next) => applyBodySave(item.id, next)}
-      onFlash={flash}
-    />
-  );
-
-  const placeholder = (label: string) => (
-    <div className="placeholder">{label} is open. Pick a candidate to fill this slot.</div>
-  );
+  const bodyOrPending = (item: Piece, fieldMode: boolean) => <EditableBody pieceId={item.id} bodyHtml={item.bodyHtml} optionBodies={item.optionBodies} fieldMode={fieldMode} canEdit={liveNotion} onSaved={(next) => applyBodySave(item.id, next)} onFlash={flash} />;
+  const placeholder = (label: string) => <div className="placeholder">{label} is open. Bonnie needs a current issue candidate for this slot.</div>;
 
   return (
     <main className="app">
       <header className="topbar">
         <div>
           <p className="eyebrow">Bonfire Signal</p>
-          <h1>Issue lineup mixer</h1>
-          <p className="deck">
-            Pick one Bonfire View, four Team takes, and one Field Note from live Notion Pieces. The
-            preview matches the Signal email — masthead, section rules, bylines, and the contributor row.
-          </p>
-          {syncNote.includes("fallback") || syncNote.includes("Cached snapshot") ? (
-            <p className="deck" style={{ marginTop: 10 }}>
-              <a href="/connect" style={{ color: "var(--ember)", fontWeight: 700 }}>
-                Connect Notion
-              </a>{" "}
-              for live Pieces (OAuth — no API key required).
-            </p>
-          ) : null}
+          <h1>Signal Mixer</h1>
+          <p className="deck">Start with Bonnie’s recommended draft, then swap from three ranked options for each slot.</p>
         </div>
-        <div className="state-note" dangerouslySetInnerHTML={{ __html: syncNote }} />
+        <div className="state-note" role="status">{syncNote}</div>
       </header>
-
+      <section className="issue-bar" aria-label="Current issue">
+        <div>
+          <p className="eyebrow">Current issue</p>
+          <h2>{issue?.title || "Choose the current issue in Notion"}</h2>
+          <p className="issue-dates">Source calls {dateLabel(issue?.sourceStart)} – {dateLabel(issue?.sourceEnd)}{issue?.targetSend ? ` · Target send ${dateLabel(issue.targetSend)}` : ""}</p>
+          <p className="issue-progress"><strong>{issue?.generationStatus || "Awaiting setup"}</strong> · {filledSlots}/6 draft slots · {candidates.length}/18 candidates</p>
+          {issue?.generationNote ? <p className="issue-note">{issue.generationNote}</p> : null}
+        </div>
+        <div className="issue-actions">
+          <a className="action primary" href={issue?.url || COMMAND_URL} target="_blank" rel="noreferrer">Generate / refresh in Notion</a>
+          <a className="action" href={ARCHIVE_URL} target="_blank" rel="noreferrer">Past issues</a>
+          {!liveNotion ? <a className="action" href="/connect">Connect Notion</a> : null}
+        </div>
+      </section>
+      {issueError ? <p className="workflow-alert" role="alert">{issueError}</p> : null}
       <section className="workspace" aria-label="Signal lineup mixer">
         <div className="panel">
-          <div className="panel-head">
-            <h2>Picker</h2>
-            <div className="counter">{teamCount}/4 Team takes</div>
-          </div>
+          <div className="panel-head"><h2>Current issue options</h2><div className="counter">{filledSlots}/6 slots</div></div>
           <div className="filters" role="group" aria-label="Status filter">
-            {["all", "Approved", "Draft"].map((filter) => (
-              <button
-                key={filter}
-                type="button"
-                className="chip"
-                aria-pressed={statusFilter === filter}
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  preserveScroll(() => setStatusFilter(filter));
-                }}
-              >
-                {filter === "all" ? "All statuses" : filter}
-              </button>
-            ))}
-            <button
-              type="button"
-              className="chip"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => void refreshPieces("manual")}
-            >
-              Refresh now
-            </button>
+            {["all", "Approved", "Draft"].map((filter) => <button key={filter} type="button" className="chip" aria-pressed={statusFilter === filter} onClick={() => preserveScroll(() => setStatusFilter(filter))}>{filter === "all" ? "All candidates" : filter}</button>)}
+            <button type="button" className="chip" onClick={() => void refreshPieces("manual")}>Refresh now</button>
           </div>
           <div className="controls" ref={controlsRef}>
-            {!candidates.length ? (
-              <div className="empty-data">No Pieces loaded yet. Waiting on live Notion sync…</div>
-            ) : (
-              sections.map((section) => {
-                const options = bySection(section.key);
-                const isOpen = openSections[section.key];
-                return (
-                  <div className={`section-card ${isOpen ? "is-open" : ""}`} key={section.key}>
-                    <button
-                      type="button"
-                      className="section-title"
-                      aria-expanded={isOpen}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => toggleSection(section.key)}
-                    >
-                      <h3>{section.title}</h3>
-                      <span className="hint">{section.hint}</span>
-                      <span className="section-chevron" aria-hidden="true">
-                        ›
-                      </span>
-                    </button>
-                    {!isOpen ? (
-                      <p className="section-summary">
-                        <strong>{sectionSummary(section.key)}</strong>
-                      </p>
-                    ) : (
-                      <div className="section-body">
-                        {!options.length ? (
-                          <div className="empty-data">No {section.title} candidates for this filter.</div>
-                        ) : (
-                          options.map((item) => {
-                            const checked =
-                              section.key === "team"
-                                ? state.team.includes(item.id)
-                                : state[section.key] === item.id;
-                            const disabled = section.key === "team" && !checked && teamCount >= 4;
-                            const id = `pick-${item.id}`;
-                            return (
-                              <label
-                                key={item.id}
-                                className={`option ${disabled ? "is-disabled" : ""} ${checked ? "is-on" : ""}`}
-                                data-kind={section.type}
-                                htmlFor={id}
-                                onMouseDown={(e) => {
-                                  // Block focus scroll-into-view without cancelling the click.
-                                  e.preventDefault();
-                                }}
-                                onClick={(e) => {
-                                  // Drive selection ourselves so native radio/checkbox focus
-                                  // never yanks the page or picker scroll position.
-                                  e.preventDefault();
-                                  if (disabled) return;
-                                  if (section.key === "team") {
-                                    handlePick(item, !checked);
-                                  } else if (!checked) {
-                                    handlePick(item, true);
-                                  }
-                                }}
-                              >
-                                <input
-                                  id={id}
-                                  name={section.type === "checkbox" ? item.id : item.section}
-                                  type={section.type}
-                                  value={item.id}
-                                  checked={checked}
-                                  disabled={disabled}
-                                  tabIndex={-1}
-                                  onChange={() => {
-                                    /* selection handled on label click */
-                                  }}
-                                />
-                                <span className="check" aria-hidden="true" />
-                                <span>
-                                  <span className="option-title">{item.title}</span>
-                                  <span className="meta">
-                                    <span className="pill">{partnerDisplayName(item) || item.partner}</span>
-                                    <span className={`pill ${item.status === "Approved" ? "approved" : ""}`}>
-                                      {item.status}
-                                    </span>
-                                    {item.hasBody ? (
-                                      <span className="pill">Has draft</span>
-                                    ) : (
-                                      <span className="pill missing">Body pending</span>
-                                    )}
-                                  </span>
-                                </span>
-                              </label>
-                            );
-                          })
-                        )}
-                      </div>
-                    )}
-                  </div>
-                );
-              })
-            )}
+            {!candidates.length ? <p className="empty-data">{issue?.generationStatus === "Generating" ? "Bonnie is preparing this issue. Candidates appear here as they are ready." : "No eligible candidates for this issue yet. Generate in Notion to start; previous issues stay in the archive."}</p> : null}
+            {MIXER_SLOTS.map((slot) => {
+              const options = bySlot(slot.key);
+              const isOpen = openSections[slot.key];
+              const selected = find(state[slot.key]);
+              return <div className={`section-card ${isOpen ? "is-open" : ""}`} key={slot.key}>
+                <button type="button" className="section-title" aria-expanded={isOpen} aria-controls={`options-${slot.key}`} onClick={() => toggleSection(slot.key)}>
+                  <h3>{slot.title}</h3><span className="hint">{options.length}/3 options</span><span className="section-chevron" aria-hidden="true">›</span>
+                </button>
+                {!isOpen ? <p className="section-summary"><strong>{selected?.title || "Awaiting a selection"}</strong>{selected ? <span> · {partnerDisplayName(selected) || selected.partner}</span> : null}</p> :
+                  <div className="section-body" id={`options-${slot.key}`} role="radiogroup" aria-label={slot.title}>
+                    {!options.length ? <p className="empty-data">No {slot.title} candidates for this filter.</p> : options.map((item) => {
+                      const checked = state[slot.key] === item.id;
+                      const duplicateVoice = slot.type === "Team take" && team.some((other) => other.partner === item.partner && slotForPiece(other)?.key !== slot.key);
+                      return <div key={item.id} className="candidate">
+                        <label className={`option ${checked ? "is-on" : ""} ${duplicateVoice ? "is-disabled" : ""}`} data-kind="radio">
+                          <input type="radio" name={slot.key} value={item.id} checked={checked} disabled={duplicateVoice} onChange={() => handlePick(slot.key, item)} />
+                          <span className="check" aria-hidden="true" />
+                          <span><span className="option-title">{item.title}</span><span className="meta"><span className="pill">#{item.candidateRank}</span><span className="pill">{partnerDisplayName(item) || item.partner}</span><span className={`pill ${item.status === "Approved" ? "approved" : ""}`}>{item.status}</span>{item.recommended ? <span className="pill recommended">Bonnie’s pick</span> : null}</span>{item.rankingReason ? <span className="ranking-reason">{item.rankingReason}</span> : null}<span className="source-date">Source call {dateLabel(item.sourceDate)}</span>{duplicateVoice ? <span className="source-date">This voice is already in another team slot.</span> : null}</span>
+                        </label>
+                        <a className="candidate-source" href={item.url} target="_blank" rel="noreferrer">Open piece and sources</a>
+                      </div>;
+                    })}
+                  </div>}
+              </div>;
+            })}
           </div>
           <div className="actions">
-            <button
-              type="button"
-              className="action"
-              onClick={() => {
-                persist({ view: null, field: null, team: [] });
-                flash("Lineup cleared.");
-              }}
-            >
-              Clear lineup
-            </button>
-            <button
-              type="button"
-              className="action primary"
-              onClick={() => {
-                const views = bySection("view");
-                const fields = bySection("field");
-                const teams = bySection("team");
-                if (!views.length || !fields.length || teams.length < 4) {
-                  flash("Need at least 1 View, 4 Team takes, and 1 Field Note.");
-                  return;
-                }
-                const pick = <T,>(list: T[], count: number) => {
-                  const pool = [...list];
-                  const out: T[] = [];
-                  while (out.length < count && pool.length) {
-                    const index = Math.floor(Math.random() * pool.length);
-                    out.push(pool.splice(index, 1)[0]);
-                  }
-                  return out;
-                };
-                persist({
-                  view: pick(views, 1)[0].id,
-                  field: pick(fields, 1)[0].id,
-                  team: pick(teams, 4).map((item) => item.id),
-                });
-                flash("Complete lineup selected.");
-              }}
-            >
-              Random complete lineup
-            </button>
-            <button
-              type="button"
-              className="action"
-              onClick={async () => {
-                const lines = [
-                  "Bonfire Signal lineup",
-                  "",
-                  `The Bonfire View: ${view ? `${view.title} | ${partnerByline(view, true)}` : "[open]"}`,
-                  "",
-                  "From the Bonfire Team",
-                  ...[0, 1, 2, 3].map(
-                    (i) =>
-                      `${i + 1}. ${team[i] ? `${team[i].title} | ${partnerByline(team[i], false)}` : "[open]"}`,
-                  ),
-                  "",
-                  `Field Notes from the Portfolio: ${
-                    field
-                      ? field.title +
-                        (field.partner === "Anonymous" ? "" : ` | ${partnerByline(field, false)}`)
-                      : "[open]"
-                  }`,
-                  "",
-                  `In this issue: ${names.join(" · ") || "[none yet]"}`,
-                ];
-                try {
-                  await navigator.clipboard.writeText(lines.join("\n"));
-                  flash("Lineup summary copied.");
-                } catch {
-                  flash("Copy failed. Select and copy from the preview instead.");
-                }
-              }}
-            >
-              Copy lineup summary
-            </button>
+            <button type="button" className="action primary" disabled={!candidates.length} onClick={() => { persist(recommendedLineup(candidates)); flash("Bonnie’s ranked lineup loaded. Missing slots remain open."); }}>Load Bonnie’s lineup</button>
+            <button type="button" className="action" disabled={!issue} onClick={() => persist(emptyLineup())}>Clear lineup</button>
+            <button type="button" className="action" disabled={!issue} onClick={async () => {
+              const lines = [issue?.title || "Bonfire Signal", `Source calls ${dateLabel(issue?.sourceStart)} – ${dateLabel(issue?.sourceEnd)}`, "Draft for review", "", ...MIXER_SLOTS.map((slot) => { const piece = find(state[slot.key]); return `${slot.title}: ${piece ? `${piece.title} | ${partnerByline(piece, slot.key === "view")} | ${piece.url}` : "[open]"}`; }), "", `In this issue: ${names.join(" · ")}`];
+              try { await navigator.clipboard.writeText(lines.join("\n")); flash("Current issue lineup copied."); } catch { flash("Could not copy. Copy from the preview instead."); }
+            }}>Copy lineup summary</button>
           </div>
-          <div className="toast" aria-live="polite">
-            {toast}
-          </div>
+          <div className="toast" aria-live="polite">{toast}</div>
         </div>
 
         <aside className="preview-shell">
           <div className="preview-label">
             <span>Signal email preview</span>
             <span style={{ color: isComplete ? "var(--good)" : "var(--warn)", fontWeight: 700 }}>
-              {isComplete ? "Complete" : "Incomplete"}
+              {isComplete ? "Draft ready for review" : "Draft incomplete"}
             </span>
           </div>
           <article className="email" aria-label="Email preview">
             <div className="email-inner">
               <div className="email-util">
-                <span>{issueMetaLine(ISSUE_DEFAULT)}</span>
+                <span>{issueMetaLine(issue?.title || "Current issue")}</span>
                 <a href="#" onClick={(e) => e.preventDefault()}>
                   Open in browser
                 </a>
@@ -669,7 +323,9 @@ export default function MixerPage() {
                     <div className="sec-line" />
                   </div>
                   <div className="team-list">
-                    {team.map((item) => (
+                    {(["team1", "team2", "team3", "team4"] as const).map((key, index) => {
+                      const item = find(state[key]);
+                      return item ? (
                       <div className="team-item" key={item.id}>
                         <p className="team-name">
                           {(partnerDisplayName(item) || item.partner || "").toUpperCase()}
@@ -677,10 +333,8 @@ export default function MixerPage() {
                         <h3>{item.title}</h3>
                         {bodyOrPending(item, false)}
                       </div>
-                    ))}
-                    {Array.from({ length: Math.max(0, 4 - team.length) }, (_, i) => (
-                      <div key={`empty-${i}`}>{placeholder(`Team take ${team.length + i + 1}`)}</div>
-                    ))}
+                      ) : <div key={key}>{placeholder(`Team take ${index + 1}`)}</div>;
+                    })}
                   </div>
                 </section>
 

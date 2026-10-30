@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "project": {
+    "name": "bonfire-signal-lineup-mixer",
+    "productType": "Newsletter issue editor",
+    "stack": [
+      "nextjs",
+      "react"
+    ]
+  },
+  "sources": {
+    "tokens": [
+      "app/mixer.css"
+    ],
+    "components": [
+      "app/components/EditableBody.tsx"
+    ],
+    "assets": [
+      "public/masthead.png"
+    ],
+    "instructions": []
+  },
+  "design": {
+    "colorMode": "light",
+    "colors": {
+      "navy": "#132540",
+      "ember": "#E9633F",
+      "paper": "#ffffff",
+      "panel": "#F2F5F4"
+    },
+    "typography": {
+      "sans": "Helvetica, Arial, sans-serif",
+      "serif": "Georgia, Times New Roman, serif"
+    },
+    "spacing": {},
+    "radius": {
+      "panel": "12px"
+    },
+    "shadows": {},
+    "motion": {},
+    "density": "compact editorial controls with a readable email preview"
+  },
+  "components": {
+    "installed": [],
+    "preferredPrimitives": [
+      "Existing EditableBody editor",
+      "Existing chip, action, option and section-card styles"
+    ],
+    "patterns": []
+  },
+  "constraints": {
+    "must": [
+      "Preserve the Signal email preview and masthead",
+      "Show only current-issue content",
+      "Keep radio options keyboard accessible",
+      "Use existing navy and ember tokens"
+    ],
+    "avoid": [
+      "New decorative styles",
+      "Mixing past issue content into current issue options"
+    ]
+  },
+  "decisions": [],
+  "evidence": [
+    {
+      "fact": "project.stack:nextjs",
+      "source": "package.json"
+    },
+    {
+      "fact": "project.stack:react",
+      "source": "package.json"
+    },
+    {
+      "fact": "Existing color and type tokens",
+      "source": "app/mixer.css"
+    },
+    {
+      "fact": "Editable Notion body and option toggles",
+      "source": "app/components/EditableBody.tsx"
+    }
+  ],
+  "generatedAt": "2026-10-30T19:22:56.125Z"
+}

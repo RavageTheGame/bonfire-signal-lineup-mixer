@@ -2,12 +2,13 @@ import { Client } from "@notionhq/client";
 import { blocksToBodyHtml, type NotionBlock } from "./blocks-to-html";
 import { ensureNotionToken } from "./notion-token-store";
 import { PIECE_PROPS, peopleNameToPartnerKey } from "./piece-schema";
-import type { Piece, PiecesPayload } from "./types";
-import fallback from "../public/pieces.json";
+import type { Piece, PiecesPayload, SignalIssue } from "./types";
+import { currentCandidates, validSourceWindow } from "./issue-workflow";
 
 export const SIGNAL_PIECES_DB =
   process.env.NOTION_PIECES_DATABASE_ID ||
   "7b8dc4d7-c313-4bda-923d-0ecaa0b4b610";
+const SIGNAL_ISSUES_DB = process.env.NOTION_ISSUES_DATABASE_ID || "eecbb144-5f06-4827-a647-031e9b9cdad8";
 
 const CACHE_TTL_MS = Number(process.env.PIECES_CACHE_TTL_MS || 20_000);
 
@@ -71,6 +72,47 @@ function propRelationIds(props: Record<string, any>, name: string): string[] {
   return (p.relation || []).map((r: { id: string }) => r.id);
 }
 
+function propDate(props: Record<string, any>, name: string): string | null {
+  return props[name]?.date?.start || null;
+}
+
+function propText(props: Record<string, any>, name: string): string {
+  return (props[name]?.rich_text || []).map((item: { plain_text?: string }) => item.plain_text || "").join("");
+}
+
+async function activeIssue(notion: Client): Promise<{ issue: SignalIssue | null; issueError?: string }> {
+  const result = await notion.databases.query({
+    database_id: SIGNAL_ISSUES_DB,
+    filter: { property: "Active issue", checkbox: { equals: true } },
+    page_size: 2,
+  });
+  if (result.results.length !== 1) {
+    return { issue: null, issueError: result.results.length
+      ? "More than one issue is active. Choose one active issue in Notion."
+      : "Choose the current issue in Signal Command before generating a draft." };
+  }
+  const page = result.results[0] as any;
+  const props = page.properties || {};
+  const issue: SignalIssue = {
+    id: page.id,
+    title: propTitle(props),
+    url: page.url,
+    sourceStart: propDate(props, "Source start"),
+    sourceEnd: propDate(props, "Source end"),
+    targetSend: propDate(props, "Target send"),
+    generationStatus: propSelect(props, "Generation status") || "Not started",
+    generationNote: propText(props, "Generation note"),
+    generatedAt: propDate(props, "Generated at"),
+  };
+  if (/^(sent|repurposing|archived)$/i.test(propSelect(props, "Status"))) {
+    return { issue: null, issueError: "The active issue has already shipped. Activate the next issue in Signal Command." };
+  }
+  if (!validSourceWindow(issue)) {
+    return { issue, issueError: "Set a valid source start and end date on this issue before generating content." };
+  }
+  return { issue };
+}
+
 /** Read People (person) with legacy Partner select fallback → mixer byline key. */
 function propPartnerKey(props: Record<string, any>): string {
   const people = props[PIECE_PROPS.people];
@@ -85,12 +127,13 @@ function propPartnerKey(props: Record<string, any>): string {
   return "TBD";
 }
 
-async function listAllPages(notion: Client) {
+async function listAllPages(notion: Client, issueId: string) {
   const pages: any[] = [];
   let cursor: string | undefined;
   do {
     const res = await notion.databases.query({
       database_id: SIGNAL_PIECES_DB,
+      filter: { property: PIECE_PROPS.relatedIssue[0], relation: { contains: issueId } },
       start_cursor: cursor,
       page_size: 100,
       sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
@@ -180,19 +223,29 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
 
   const notion = await notionClient();
   if (!notion) {
-    // Snapshot data, but stamp refreshedAt so "Refresh now" is visibly alive.
+    // Never substitute a prior issue's static snapshot into the current issue.
     const payload: PiecesPayload = {
-      syncedAt: (fallback as any).syncedAt || new Date().toISOString(),
+      syncedAt: new Date().toISOString(),
       refreshedAt: new Date().toISOString(),
       source: "fallback-json",
-      pieces: (fallback as any).pieces || [],
+      pieces: [],
+      issue: null,
+      issueError: "Connect Notion to load the active issue. Historical snapshots are hidden.",
     };
     cache = { at: Date.now(), payload };
     return payload;
   }
 
-  const pages = await listAllPages(notion);
+  const selection = await activeIssue(notion);
+  if (!selection.issue || selection.issueError) {
+    const now = new Date().toISOString();
+    const payload: PiecesPayload = { syncedAt: now, refreshedAt: now, source: "notion-live", pieces: [], ...selection };
+    cache = { at: Date.now(), payload };
+    return payload;
+  }
+  const pages = await listAllPages(notion, selection.issue.id);
   const issueCache = new Map<string, string>();
+  issueCache.set(selection.issue.id, selection.issue.title);
 
   const pieces = await mapWithConcurrency(pages, 4, async (page) => {
     const props = page.properties || {};
@@ -235,16 +288,24 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
       options,
       optionBodies,
       lastEditedTime: page.last_edited_time,
+      mixerSlot: propSelect(props, "Mixer slot") || null,
+      candidateRank: props["Candidate rank"]?.number ?? null,
+      rankingReason: propText(props, "Ranking reason"),
+      recommended: props.Recommended?.checkbox === true,
+      sourceDate: propDate(props, "Source date"),
     };
     return piece;
   });
 
   const now = new Date().toISOString();
+  const eligible = currentCandidates(pieces.filter(Boolean) as Piece[], selection.issue);
   const payload: PiecesPayload = {
     syncedAt: now,
     refreshedAt: now,
     source: "notion-live",
-    pieces: pieces.filter(Boolean) as Piece[],
+    pieces: eligible,
+    issue: selection.issue,
+    excludedCount: pieces.filter(Boolean).length - eligible.length,
   };
   cache = { at: Date.now(), payload };
   return payload;
