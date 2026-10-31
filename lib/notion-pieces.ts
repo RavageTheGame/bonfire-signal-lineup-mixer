@@ -104,7 +104,12 @@ async function listIssuePages(notion: Client, issueId: string) {
       },
       start_cursor: cursor,
       page_size: 100,
-      sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+      sorts: [
+        ...(schema.properties["Candidate rank"]?.type === "number"
+          ? [{ property: "Candidate rank", direction: "ascending" as const }]
+          : []),
+        { timestamp: "last_edited_time", direction: "descending" },
+      ],
     });
     pages.push(...res.results);
     cursor = res.has_more ? res.next_cursor || undefined : undefined;
