@@ -29,5 +29,6 @@ export type PiecesPayload = {
   refreshedAt?: string;
   source: "notion-live" | "fallback-json";
   pieces: Piece[];
+  issue: { id: string; title: string; url: string } | null;
   staleSeconds?: number;
 };

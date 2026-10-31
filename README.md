@@ -17,10 +17,20 @@ GitHub Pages is static — it cannot hold a Notion secret or query Pieces on eac
 |---|---|---|
 | `NOTION_TOKEN` | Yes for live sync | Notion internal integration secret with access to Signal Pieces |
 | `NOTION_PIECES_DATABASE_ID` | No | Defaults to Signal Pieces `7b8dc4d7-c313-4bda-923d-0ecaa0b4b610` |
+| `NOTION_ISSUES_DATABASE_ID` | No | Defaults to Signal Issues `eecbb144-5f06-4827-a647-031e9b9cdad8` |
 | `NOTION_WEBHOOK_SECRET` | No | If set, webhook requests must include it |
 | `PIECES_CACHE_TTL_MS` | No | Server cache TTL (default `20000`) |
 
-Without `NOTION_TOKEN`, `/api/pieces` falls back to `public/pieces.json`.
+Bonnie and Signal Command own issue creation, generation, and scheduling in Notion.
+Bonnie writes individual drafts to the existing Signal Pieces database, with their
+Type, People, Related Issue, and copy under a `Draft body` heading. Existing Option
+toggles remain supported. The mixer continues to provide picking, previewing, and
+body editing.
+
+Exactly one Signal Issues row must have the `Active issue` checkbox selected.
+The mixer queries only Pieces related to that issue and uses its title in the
+email preview. Historical Pieces remain in Notion. Missing Notion access or an
+ambiguous active issue returns an error instead of showing the old bundled copy.
 
 ## Local
 

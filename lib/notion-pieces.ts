@@ -3,11 +3,14 @@ import { blocksToBodyHtml, type NotionBlock } from "./blocks-to-html";
 import { ensureNotionToken } from "./notion-token-store";
 import { PIECE_PROPS, peopleNameToPartnerKey } from "./piece-schema";
 import type { Piece, PiecesPayload } from "./types";
-import fallback from "../public/pieces.json";
+import { belongsToIssue, requireActiveIssue } from "./issue-workflow";
 
 export const SIGNAL_PIECES_DB =
   process.env.NOTION_PIECES_DATABASE_ID ||
   "7b8dc4d7-c313-4bda-923d-0ecaa0b4b610";
+
+export const SIGNAL_ISSUES_DB =
+  process.env.NOTION_ISSUES_DATABASE_ID || "eecbb144-5f06-4827-a647-031e9b9cdad8";
 
 const CACHE_TTL_MS = Number(process.env.PIECES_CACHE_TTL_MS || 20_000);
 
@@ -85,20 +88,49 @@ function propPartnerKey(props: Record<string, any>): string {
   return "TBD";
 }
 
-async function listAllPages(notion: Client) {
+async function listIssuePages(notion: Client, issueId: string) {
+  const schema = await notion.databases.retrieve({ database_id: SIGNAL_PIECES_DB });
+  const relationNames = PIECE_PROPS.relatedIssue.filter(
+    (name) => schema.properties[name]?.type === "relation",
+  );
+  if (!relationNames.length) throw new Error("Signal Pieces needs its Related Issue relation.");
   const pages: any[] = [];
   let cursor: string | undefined;
   do {
     const res = await notion.databases.query({
       database_id: SIGNAL_PIECES_DB,
+      filter: {
+        or: relationNames.map((property) => ({ property, relation: { contains: issueId } })),
+      },
       start_cursor: cursor,
       page_size: 100,
-      sorts: [{ timestamp: "last_edited_time", direction: "descending" }],
+      sorts: [
+        ...(schema.properties["Candidate rank"]?.type === "number"
+          ? [{ property: "Candidate rank", direction: "ascending" as const }]
+          : []),
+        { timestamp: "last_edited_time", direction: "descending" },
+      ],
     });
     pages.push(...res.results);
     cursor = res.has_more ? res.next_cursor || undefined : undefined;
   } while (cursor);
   return pages;
+}
+
+async function loadActiveIssue(notion: Client) {
+  const result = await notion.databases.query({
+    database_id: SIGNAL_ISSUES_DB,
+    filter: { property: "Active issue", checkbox: { equals: true } },
+    page_size: 2,
+  });
+  const page = requireActiveIssue(result.results) as any;
+  const props = page.properties || {};
+  const titleKey = Object.keys(props).find((key) => props[key]?.type === "title") || "Name";
+  return {
+    id: page.id as string,
+    title: propTitle(props, titleKey),
+    url: (page.url || `https://www.notion.so/${page.id.replace(/-/g, "")}`) as string,
+  };
 }
 
 async function listBlockChildren(notion: Client, blockId: string): Promise<NotionBlock[]> {
@@ -151,26 +183,6 @@ async function mapWithConcurrency<T, R>(
   return out;
 }
 
-async function resolveIssueTitle(
-  notion: Client,
-  issueId: string | null,
-  cacheMap: Map<string, string>,
-): Promise<string | null> {
-  if (!issueId) return null;
-  if (cacheMap.has(issueId)) return cacheMap.get(issueId)!;
-  try {
-    const page = await notion.pages.retrieve({ page_id: issueId });
-    const props = (page as any).properties || {};
-    const titleKey = Object.keys(props).find((k) => props[k]?.type === "title") || PIECE_PROPS.title;
-    const title = propTitle(props, titleKey);
-    cacheMap.set(issueId, title);
-    return title;
-  } catch {
-    cacheMap.set(issueId, "");
-    return null;
-  }
-}
-
 export async function loadPiecesLive(opts?: { force?: boolean }): Promise<PiecesPayload> {
   if (opts?.force) invalidatePiecesCache();
 
@@ -180,29 +192,21 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
 
   const notion = await notionClient();
   if (!notion) {
-    // Snapshot data, but stamp refreshedAt so "Refresh now" is visibly alive.
-    const payload: PiecesPayload = {
-      syncedAt: (fallback as any).syncedAt || new Date().toISOString(),
-      refreshedAt: new Date().toISOString(),
-      source: "fallback-json",
-      pieces: (fallback as any).pieces || [],
-    };
-    cache = { at: Date.now(), payload };
-    return payload;
+    throw new Error("Connect Notion to load Pieces for the active issue.");
   }
 
-  const pages = await listAllPages(notion);
-  const issueCache = new Map<string, string>();
+  const activeIssue = await loadActiveIssue(notion);
+  const pages = await listIssuePages(notion, activeIssue.id);
 
   const pieces = await mapWithConcurrency(pages, 4, async (page) => {
     const props = page.properties || {};
+    if (propSelect(props, PIECE_PROPS.status) === "Archived") return null;
     const type = propSelect(props, PIECE_PROPS.type);
     if (!["Big Idea", "Team take", "Field Notes"].includes(type)) {
       return null;
     }
     const issueIds = PIECE_PROPS.relatedIssue.flatMap((name) => propRelationIds(props, name));
-    const issueId = issueIds[0] || null;
-    const issue = await resolveIssueTitle(notion, issueId, issueCache);
+    if (!belongsToIssue(issueIds, activeIssue.id)) return null;
     const title = propTitle(props, PIECE_PROPS.title);
 
     let bodyHtml = "";
@@ -224,11 +228,11 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
     const piece: Piece = {
       id: page.id,
       title,
-      partner: propPartnerKey(props),
+      partner: type === "Field Notes" ? "Anonymous" : propPartnerKey(props),
       type,
       status: propSelect(props, PIECE_PROPS.status) || "Draft",
-      issue,
-      issueId,
+      issue: activeIssue.title,
+      issueId: activeIssue.id,
       url: page.url || `https://www.notion.so/${page.id.replace(/-/g, "")}`,
       hasBody,
       bodyHtml,
@@ -245,6 +249,7 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
     refreshedAt: now,
     source: "notion-live",
     pieces: pieces.filter(Boolean) as Piece[],
+    issue: activeIssue,
   };
   cache = { at: Date.now(), payload };
   return payload;

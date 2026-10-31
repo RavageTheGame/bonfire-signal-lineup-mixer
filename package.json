@@ -6,6 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
+    "test": "node --experimental-strip-types --test tests/*.test.mjs",
+    "typecheck": "tsc --noEmit",
     "verify:extract": "npx --yes tsx scripts/verify-body-extract.ts",
     "verify:writeback": "npx --yes tsx scripts/verify-body-writeback.ts"
   },
