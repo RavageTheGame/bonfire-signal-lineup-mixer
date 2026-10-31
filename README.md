@@ -1,18 +1,6 @@
 # Bonfire Signal · Issue lineup mixer
 
-Issue-focused lineup tool for Deb. Bonnie prepares three ranked candidates for each of six slots (1 Bonfire View, 4 distinct Team takes, 1 Field Note). A Ready issue opens with the recommended draft; Deb can swap options and edit the existing Notion draft bodies.
-
-## Current issue contract
-
-Exactly one Signal Issues row must have **Active issue** checked. Its **Source start** and **Source end** are inclusive meeting dates, not page creation or edit dates. The API queries only that issue’s related Pieces and excludes undated, unranked, archived, mismatched, and out-of-period candidates. It returns at most three alternatives per slot. No active issue, conflicting active issues, invalid dates, or a disconnected Notion integration produce an empty working view with an explanation. Historical snapshot JSON is never substituted for current content.
-
-Signal Issues fields: `Active issue` (checkbox), `Source start`, `Source end`, `Target send`, `Generated at` (dates), `Generation status` (select), and `Generation note` (rich text). Bonnie’s native run control uses `Run requested` (checkbox).
-
-Signal Pieces fields: existing `Related Issue`, `Type`, `People`, `Status`, and draft body; plus `Mixer slot` (select), `Candidate rank` (number 1–3), `Ranking reason` (rich text), `Recommended` (checkbox), and `Source date` (latest supporting meeting date). Slot values are `Bonfire View`, `Team take 1`, `Team take 2`, `Team take 3`, `Team take 4`, and `Field Notes`.
-
-The native Bonnie agent owns harvesting, source verification, ranking, scheduling, and generation. The mixer’s Generate link opens the active issue’s native controls. Generation must preserve provenance, human edits, and approval state; it must not send or publish a newsletter. Missing source coverage stays visible as a gap.
-
-Picks are stored separately for each issue in this browser. A manually edited or cleared lineup survives refreshes; the old global lineup is not migrated. Past issues remain in the Notion archive. Saving a body after its Piece leaves the current issue is rejected with HTTP 409.
+Live lineup tool for Deb: pick 1 Bonfire View, 4 Team takes, and 1 Field Note from **Notion Signal Pieces**, with an email-accurate preview.
 
 ## Why Vercel (not GitHub Pages)
 
@@ -33,7 +21,16 @@ GitHub Pages is static — it cannot hold a Notion secret or query Pieces on eac
 | `NOTION_WEBHOOK_SECRET` | No | If set, webhook requests must include it |
 | `PIECES_CACHE_TTL_MS` | No | Server cache TTL (default `20000`) |
 
-Without a connected Notion token, `/api/pieces` returns no candidates. The integration needs read access to both Issues and Pieces, and write access to Pieces for body editing.
+Bonnie and Signal Command own issue creation, generation, and scheduling in Notion.
+Bonnie writes individual drafts to the existing Signal Pieces database, with their
+Type, People, Related Issue, and copy under a `Draft body` heading. Existing Option
+toggles remain supported. The mixer continues to provide picking, previewing, and
+body editing.
+
+Exactly one Signal Issues row must have the `Active issue` checkbox selected.
+The mixer queries only Pieces related to that issue and uses its title in the
+email preview. Historical Pieces remain in Notion. Missing Notion access or an
+ambiguous active issue returns an error instead of showing the old bundled copy.
 
 ## Local
 
@@ -47,7 +44,3 @@ Open http://localhost:3000
 ## Notion embed
 
 Embed the production URL on Signal Command. Picks stay in the browser (`localStorage`); Pieces stay live via the API.
-
-## Verification
-
-Run `npm test`, `npm run typecheck`, and `npm run build` with Node 22.15+ or Node 24. Tests cover issue isolation, inclusive source dates, missing metadata, three-option limits, contributor diversity, and stale saved picks.
