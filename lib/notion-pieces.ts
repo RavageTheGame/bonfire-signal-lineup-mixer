@@ -228,7 +228,7 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
     const piece: Piece = {
       id: page.id,
       title,
-      partner: propPartnerKey(props),
+      partner: type === "Field Notes" ? "Anonymous" : propPartnerKey(props),
       type,
       status: propSelect(props, PIECE_PROPS.status) || "Draft",
       issue: activeIssue.title,

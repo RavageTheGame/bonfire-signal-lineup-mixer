@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EditableBody } from "./components/EditableBody";
 import "./mixer.css";
+import { distinctTeamPieces } from "../lib/lineup";
 
 type Piece = {
   id: string;
@@ -234,7 +235,9 @@ export default function MixerPage() {
           const cleaned: LineupState = {
             view: prev.view && next.some((p) => p.id === prev.view) ? prev.view : null,
             field: prev.field && next.some((p) => p.id === prev.field) ? prev.field : null,
-            team: prev.team.filter((id) => next.some((p) => p.id === id)),
+            team: distinctTeamPieces(
+              prev.team.map((id) => next.find((p) => p.id === id)).filter((p): p is Piece => Boolean(p)),
+            ).map((p) => p.id),
           };
           localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
           return cleaned;
@@ -291,7 +294,7 @@ export default function MixerPage() {
   const view = find(state.view);
   const field = find(state.field);
   const team = state.team.map(find).filter(Boolean) as Piece[];
-  const isComplete = Boolean(view && field && team.length === 4);
+  const isComplete = Boolean(view && field && distinctTeamPieces(team).length === 4);
 
   const contributorNames = () => {
     const ordered: string[] = [];
@@ -311,7 +314,8 @@ export default function MixerPage() {
     if (item.section === "team") {
       let nextTeam = [...state.team];
       if (checked) {
-        if (!nextTeam.includes(item.id) && nextTeam.length < 4) nextTeam.push(item.id);
+        nextTeam = nextTeam.filter((id) => find(id)?.partner !== item.partner);
+        if (nextTeam.length < 4) nextTeam.push(item.id);
       } else {
         nextTeam = nextTeam.filter((id) => id !== item.id);
       }
@@ -323,7 +327,7 @@ export default function MixerPage() {
 
   const sections = [
     { key: "view" as const, title: "The Bonfire View", hint: "Pick 1", type: "radio" as const },
-    { key: "team" as const, title: "From the Bonfire Team", hint: "Pick exactly 4", type: "checkbox" as const },
+    { key: "team" as const, title: "From the Bonfire Team", hint: "Pick 4 different voices", type: "checkbox" as const },
     { key: "field" as const, title: "Field Notes from the Portfolio", hint: "Pick 1", type: "radio" as const },
   ];
 
@@ -469,7 +473,8 @@ export default function MixerPage() {
                               section.key === "team"
                                 ? state.team.includes(item.id)
                                 : state[section.key] === item.id;
-                            const disabled = section.key === "team" && !checked && teamCount >= 4;
+                            const disabled = section.key === "team" && !checked && teamCount >= 4
+                              && !team.some((selected) => selected.partner === item.partner);
                             const id = `pick-${item.id}`;
                             return (
                               <label
@@ -549,8 +554,8 @@ export default function MixerPage() {
                 const views = bySection("view");
                 const fields = bySection("field");
                 const teams = bySection("team");
-                if (!views.length || !fields.length || teams.length < 4) {
-                  flash("Need at least 1 View, 4 Team takes, and 1 Field Note.");
+                if (!views.length || !fields.length || distinctTeamPieces(teams).length < 4) {
+                  flash("Need 1 View, 4 different team voices, and 1 Field Note.");
                   return;
                 }
                 const pick = <T,>(list: T[], count: number) => {
@@ -565,7 +570,7 @@ export default function MixerPage() {
                 persist({
                   view: pick(views, 1)[0].id,
                   field: pick(fields, 1)[0].id,
-                  team: pick(teams, 4).map((item) => item.id),
+                  team: distinctTeamPieces(pick(teams, teams.length)).slice(0, 4).map((item) => item.id),
                 });
                 flash("Complete lineup selected.");
               }}
