@@ -1,5 +1,10 @@
 export type PieceType = "Big Idea" | "Team take" | "Field Notes";
 
+export type OptionBody = {
+  label: string;
+  bodyHtml: string;
+};
+
 export type Piece = {
   id: string;
   title: string;
@@ -11,7 +16,10 @@ export type Piece = {
   url: string;
   hasBody: boolean;
   bodyHtml: string;
+  /** Section labels (Draft body / Option 1 / …) for quick checks. */
   options: string[];
+  /** Per-section bodies so the mixer can toggle Option 1 vs Option 2. */
+  optionBodies: OptionBody[];
   lastEditedTime?: string;
 };
 
@@ -21,5 +29,6 @@ export type PiecesPayload = {
   refreshedAt?: string;
   source: "notion-live" | "fallback-json";
   pieces: Piece[];
+  issue: { id: string; title: string; url: string } | null;
   staleSeconds?: number;
 };

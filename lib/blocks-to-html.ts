@@ -1,3 +1,5 @@
+import { isBodySection, isStopSection } from "./piece-schema";
+
 type RichText = {
   plain_text?: string;
   href?: string | null;
@@ -10,24 +12,23 @@ type RichText = {
   };
 };
 
-type NotionBlock = {
+export type NotionBlock = {
   id: string;
   type: string;
   has_children?: boolean;
+  children?: NotionBlock[];
   [key: string]: unknown;
 };
 
-const META_HEADINGS = new Set([
-  "provenance",
-  "sources notes",
-  "source notes",
-  "confidentiality",
-  "notes to deb",
-  "notes",
-  "sources (for partner review)",
-  "sources (from idea)",
-  "confidentiality notes",
-]);
+export type BodyExtractOptions = {
+  /** Piece title — used to drop the bold title echo inside Draft body. */
+  title?: string;
+};
+
+export type OptionBody = {
+  label: string;
+  bodyHtml: string;
+};
 
 function escapeHtml(text: string): string {
   return text
@@ -54,92 +55,224 @@ function richTextToHtml(items: RichText[] | undefined): string {
     .join("");
 }
 
-function blockPlain(block: NotionBlock): string {
+function blockData(block: NotionBlock): { rich_text?: RichText[]; is_toggleable?: boolean } {
   const type = block.type;
-  const data = block[type] as { rich_text?: RichText[] } | undefined;
-  return (data?.rich_text || []).map((r) => r.plain_text || "").join("").trim();
+  return (block[type] as { rich_text?: RichText[]; is_toggleable?: boolean }) || {};
 }
 
-function isMetaHeading(label: string): boolean {
-  const norm = label.trim().toLowerCase();
-  if (/^(option\s+[\da-z]+|draft body)$/i.test(norm)) return false;
-  if (META_HEADINGS.has(norm)) return true;
-  if (norm.startsWith("provenance")) return true;
-  if (norm.includes("confidentiality")) return true;
-  if (norm.includes("sources notes") || norm.includes("source notes")) return true;
-  if (norm.startsWith("sources (")) return true;
+function blockPlain(block: NotionBlock): string {
+  return (blockData(block).rich_text || [])
+    .map((r) => r.plain_text || "")
+    .join("")
+    .trim();
+}
+
+function normalizeComparable(text: string): string {
+  return text
+    .toLowerCase()
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/[“”]/g, '"')
+    .replace(/[‘’]/g, "'")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isTitleEcho(html: string, title: string | undefined): boolean {
+  if (!title?.trim()) return false;
+  const plain = normalizeComparable(html);
+  const want = normalizeComparable(title);
+  if (!plain || !want) return false;
+  if (plain === want) return true;
+  if (plain.length <= want.length + 4 && plain.includes(want)) {
+    const stripped = html.replace(/<\/?strong>/gi, "").replace(/<\/?p>/gi, "").trim();
+    return normalizeComparable(stripped) === want;
+  }
   return false;
 }
 
-export function blocksToBodyHtml(blocks: NotionBlock[]): {
+function isHeading(type: string): boolean {
+  return type === "heading_1" || type === "heading_2" || type === "heading_3";
+}
+
+function renderLeaf(block: NotionBlock): string | null {
+  const type = block.type;
+  const data = blockData(block);
+  const inner = richTextToHtml(data.rich_text);
+
+  if (!inner.trim() && type !== "divider") return null;
+
+  switch (type) {
+    case "paragraph":
+      return `<p>${inner}</p>`;
+    case "quote":
+      return `<blockquote>${inner}</blockquote>`;
+    case "bulleted_list_item":
+      return `<p>• ${inner}</p>`;
+    case "numbered_list_item":
+      return `<p>${inner}</p>`;
+    case "callout":
+      return null;
+    case "divider":
+      return null;
+    case "toggle":
+      return null;
+    default:
+      if (isHeading(type)) return null;
+      return inner.trim() ? `<p>${inner}</p>` : null;
+  }
+}
+
+function preferDefaultOption(options: OptionBody[]): OptionBody | null {
+  if (!options.length) return null;
+  const draft = options.find((o) => /^draft body$/i.test(o.label));
+  if (draft?.bodyHtml.trim()) return draft;
+  const withCopy = options.find((o) => o.bodyHtml.trim());
+  return withCopy || options[0];
+}
+
+/**
+ * Convert a Notion block tree into email-preview HTML.
+ * Prefers Draft body / Option N sections; drops Sources / Confidentiality / etc.
+ * When multiple Option / Draft body sections exist, each is kept separately so
+ * the mixer can toggle between them.
+ */
+export function blocksToBodyHtml(
+  blocks: NotionBlock[],
+  opts: BodyExtractOptions = {},
+): {
   bodyHtml: string;
   options: string[];
+  optionBodies: OptionBody[];
 } {
-  const options: string[] = [];
-  const htmlParts: string[] = [];
-  let skipUntilNextHeading = false;
-  let inDraft = false;
+  const optionBodies: OptionBody[] = [];
+  const legacyParts: string[] = [];
+  let skipMeta = false;
+  let sawBodySectionLabel = false;
+  let activeOption: { label: string; parts: string[]; titleEchoPending: boolean } | null = null;
 
-  for (const block of blocks) {
-    const type = block.type;
-    const plain = blockPlain(block);
+  const pushTo = (
+    target: { parts: string[]; titleEchoPending: boolean },
+    html: string | null,
+  ) => {
+    if (!html?.trim()) return;
+    if (target.titleEchoPending && isTitleEcho(html, opts.title)) {
+      target.titleEchoPending = false;
+      return;
+    }
+    target.titleEchoPending = false;
+    target.parts.push(html);
+  };
 
-    if (type === "heading_1" || type === "heading_2" || type === "heading_3") {
-      if (isMetaHeading(plain)) {
-        skipUntilNextHeading = true;
-        inDraft = false;
+  const flushActive = () => {
+    if (!activeOption) return;
+    optionBodies.push({
+      label: activeOption.label,
+      bodyHtml: activeOption.parts.join("\n"),
+    });
+    activeOption = null;
+  };
+
+  const walk = (list: NotionBlock[], depth: number) => {
+    for (const block of list) {
+      const type = block.type;
+      const plain = blockPlain(block);
+      const children = Array.isArray(block.children) ? block.children : [];
+      const data = blockData(block);
+      const toggleableHeading = isHeading(type) && Boolean(data.is_toggleable || block.has_children);
+
+      if (isHeading(type) || type === "toggle") {
+        const label = plain || (type === "toggle" ? blockPlain(block) : "");
+
+        if (label && isStopSection(label)) {
+          flushActive();
+          skipMeta = true;
+          continue;
+        }
+
+        if (label && isBodySection(label)) {
+          flushActive();
+          skipMeta = false;
+          sawBodySectionLabel = true;
+          activeOption = {
+            label,
+            parts: [],
+            titleEchoPending: Boolean(opts.title?.trim()),
+          };
+          if (children.length) walk(children, depth + 1);
+          // End this section after walking its children (toggle/heading children)
+          // Sibling content after a non-toggle heading is handled while activeOption stays set
+          // until the next body/stop heading — but for toggleables we already consumed kids.
+          if (children.length && (type === "toggle" || data.is_toggleable || block.has_children)) {
+            flushActive();
+          }
+          continue;
+        }
+
+        if (skipMeta) continue;
+
+        if (activeOption && label) {
+          pushTo(activeOption, `<p><strong>${escapeHtml(label)}</strong></p>`);
+          if (children.length) walk(children, depth + 1);
+          continue;
+        }
+
+        if (type === "toggle" || toggleableHeading) {
+          if (children.length) walk(children, depth + 1);
+          continue;
+        }
+
         continue;
       }
-      skipUntilNextHeading = false;
-      if (/^(option\s+[\da-z]+|draft body)$/i.test(plain)) {
-        options.push(plain);
-        inDraft = true;
+
+      if (skipMeta && !activeOption) continue;
+
+      if (!activeOption && sawBodySectionLabel) continue;
+
+      if (!activeOption && !sawBodySectionLabel) {
+        if (
+          type !== "paragraph" &&
+          type !== "quote" &&
+          type !== "bulleted_list_item" &&
+          type !== "numbered_list_item"
+        ) {
+          if (children.length) walk(children, depth + 1);
+          continue;
+        }
+        const leaf = renderLeaf(block);
+        if (leaf?.trim()) {
+          // Title echo strip for legacy top-level
+          if (opts.title && isTitleEcho(leaf, opts.title) && !legacyParts.length) {
+            // skip
+          } else {
+            legacyParts.push(leaf);
+          }
+        }
+        if (children.length) walk(children, depth + 1);
         continue;
       }
-      // Treat other headings as section breaks inside draft
-      if (htmlParts.length) {
-        // keep flowing as body content via bold line
-        htmlParts.push(`<p><strong>${escapeHtml(plain)}</strong></p>`);
+
+      if (activeOption) {
+        pushTo(activeOption, renderLeaf(block));
+        if (children.length) walk(children, depth + 1);
       }
-      inDraft = true;
-      continue;
     }
+  };
 
-    if (skipUntilNextHeading && !inDraft) continue;
+  walk(blocks, 0);
+  flushActive();
 
-    // Before any draft heading, still capture top-level paragraphs as body
-    // (some pieces put copy above Option headings)
-    if (!inDraft && !htmlParts.length && type !== "paragraph" && type !== "quote") {
-      continue;
-    }
-
-    const data = block[type] as { rich_text?: RichText[] } | undefined;
-    const inner = richTextToHtml(data?.rich_text);
-
-    if (!inner.trim() && type !== "divider") continue;
-
-    switch (type) {
-      case "paragraph":
-        htmlParts.push(`<p>${inner}</p>`);
-        break;
-      case "quote":
-        htmlParts.push(`<blockquote>${inner}</blockquote>`);
-        break;
-      case "bulleted_list_item":
-        htmlParts.push(`<p>• ${inner}</p>`);
-        break;
-      case "numbered_list_item":
-        htmlParts.push(`<p>${inner}</p>`);
-        break;
-      case "divider":
-        break;
-      default:
-        if (inner.trim()) htmlParts.push(`<p>${inner}</p>`);
-    }
+  if (!optionBodies.length && legacyParts.length) {
+    optionBodies.push({ label: "Draft", bodyHtml: legacyParts.join("\n") });
   }
 
+  const preferred = preferDefaultOption(optionBodies);
   return {
-    bodyHtml: htmlParts.join("\n"),
-    options,
+    bodyHtml: preferred?.bodyHtml || "",
+    options: optionBodies.map((o) => o.label),
+    optionBodies,
   };
 }

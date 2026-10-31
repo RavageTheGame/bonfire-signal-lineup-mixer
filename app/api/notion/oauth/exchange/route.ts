@@ -39,10 +39,12 @@ export async function POST(request: NextRequest) {
     invalidatePiecesCache();
 
     let envUpserted = false;
+    let blobSaved = false;
     let redeployId: string | null = null;
     try {
       const persisted = await persistNotionTokenToVercel(token.access_token);
       envUpserted = persisted.envUpserted;
+      blobSaved = persisted.blobSaved;
       redeployId = persisted.redeployId || null;
     } catch {
       /* optional */
@@ -52,7 +54,8 @@ export async function POST(request: NextRequest) {
       ok: true,
       workspaceName: token.workspace_name || null,
       workspaceId: token.workspace_id || null,
-      persisted: envUpserted,
+      persisted: envUpserted || blobSaved,
+      blobSaved,
       redeployId,
     });
   } catch (err) {
