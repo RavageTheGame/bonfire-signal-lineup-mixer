@@ -518,9 +518,7 @@ export default function MixerPage() {
                                     <span className={`pill ${item.status === "Approved" ? "approved" : ""}`}>
                                       {item.status}
                                     </span>
-                                    {item.hasBody ? (
-                                      <span className="pill">Has draft</span>
-                                    ) : (
+                                    {!item.hasBody && (
                                       <span className="pill missing">Body pending</span>
                                     )}
                                   </span>
