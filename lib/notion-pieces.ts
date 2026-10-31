@@ -200,6 +200,7 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
 
   const pieces = await mapWithConcurrency(pages, 4, async (page) => {
     const props = page.properties || {};
+    if (propSelect(props, PIECE_PROPS.status) === "Archived") return null;
     const type = propSelect(props, PIECE_PROPS.type);
     if (!["Big Idea", "Team take", "Field Notes"].includes(type)) {
       return null;
