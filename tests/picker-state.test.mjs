@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { reconcilePickerSelection } from "../lib/picker-state.ts";
+import { chooseIssuePickerSelection, readSavedPickerSelections, reconcilePickerSelection } from "../lib/picker-state.ts";
 import { isAvailableCandidate } from "../lib/editorial-decision.ts";
 
 test("new regenerated options preserve selected and kept choices in their existing order", () => {
@@ -44,4 +44,43 @@ test("refresh removes unavailable rows and duplicate team voices while retaining
     reconcilePickerSelection({ view: "view", field: "missing", team: ["team-a2", "team-a1", "team-b", "team-c"] }, pieces, isAvailableCandidate),
     { view: "view", field: null, team: ["team-a2", "team-c"] },
   );
+});
+
+test("a fresh browser starts with the issue draft while saved custom swaps and intentional clears remain", () => {
+  const pieces = [{ id: "view", partner: "A" }, { id: "alternative", partner: "B" }, { id: "field", partner: "Anonymous" }];
+  const draft = { view: "view", field: "field", team: [] };
+  assert.deepEqual(chooseIssuePickerSelection(null, null, draft, pieces, isAvailableCandidate), { origin: "draft", selection: draft });
+  const custom = { origin: "custom", selection: { ...draft, view: "alternative" } };
+  assert.deepEqual(chooseIssuePickerSelection(custom, null, draft, pieces, isAvailableCandidate), custom);
+  const cleared = { origin: "custom", selection: { view: null, field: null, team: [] } };
+  assert.deepEqual(chooseIssuePickerSelection(cleared, null, draft, pieces, isAvailableCandidate), cleared);
+});
+
+test("legacy valid choices migrate as custom; empty or another issue's choices do not suppress defaults", () => {
+  const pieces = [{ id: "view", partner: "A" }, { id: "alternative", partner: "B" }];
+  const draft = { view: "view", field: null, team: [] };
+  const legacy = { view: "alternative", field: null, team: [] };
+  assert.deepEqual(chooseIssuePickerSelection(null, legacy, draft, pieces, isAvailableCandidate), { origin: "custom", selection: legacy });
+  for (const previous of [{ view: null, field: null, team: [] }, { view: "another-issue", field: null, team: [] }]) {
+    assert.deepEqual(chooseIssuePickerSelection(null, previous, draft, pieces, isAvailableCandidate), { origin: "draft", selection: draft });
+  }
+});
+
+test("untouched defaults follow a regenerated issue draft while an omitted Keep remains available", () => {
+  const pieces = [{ id: "old", partner: "A", editorialDecision: "Keep" }, { id: "new", partner: "B" }];
+  const before = { origin: "draft", selection: { view: "old", field: null, team: [] } };
+  const draft = { view: "new", field: null, team: [] };
+  assert.deepEqual(chooseIssuePickerSelection(before, null, draft, pieces, isAvailableCandidate), { origin: "draft", selection: draft });
+  assert.equal(isAvailableCandidate(pieces[0]), true);
+  // A deliberate local pick still remains custom when the issue draft changes.
+  assert.deepEqual(chooseIssuePickerSelection({ ...before, origin: "custom" }, null, draft, pieces, isAvailableCandidate), {
+    origin: "custom", selection: before.selection,
+  });
+});
+
+test("saved browser data is scoped by issue and rejects malformed records", () => {
+  const issue = "11111111-1111-1111-1111-111111111111";
+  const saved = { origin: "custom", selection: { view: "a", field: null, team: [] } };
+  assert.deepEqual(readSavedPickerSelections({ [issue]: saved, bad: { origin: "unexpected", selection: saved.selection } }), { [issue]: saved });
+  assert.deepEqual(readSavedPickerSelections([saved]), {});
 });

@@ -1,3 +1,5 @@
+import type { PickerSelection } from "./picker-state";
+
 export type PieceType = "Big Idea" | "Team take" | "Field Notes";
 
 export type OptionBody = {
@@ -33,6 +35,14 @@ export type PiecesPayload = {
   refreshedAt?: string;
   source: "notion-live" | "fallback-json";
   pieces: Piece[];
-  issue: { id: string; title: string; url: string } | null;
+  issue: {
+    id: string;
+    title: string;
+    url: string;
+    draftLineup?: PickerSelection | null;
+    draftRevision?: string;
+    generationStatus?: string;
+    draftUnavailableReason?: string;
+  } | null;
   staleSeconds?: number;
 };
