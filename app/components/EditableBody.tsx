@@ -229,7 +229,7 @@ export function EditableBody({
             </button>
           </>
         ) : (
-          <button type="button" className="body-edit__btn" onClick={startEdit}>
+          <button type="button" className="body-edit__btn" disabled={!canEdit} onClick={startEdit}>
             {activeHtml.trim()
               ? showToggle
                 ? `Edit ${shortLabel(selectedLabel)}`

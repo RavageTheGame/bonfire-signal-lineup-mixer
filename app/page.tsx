@@ -247,7 +247,7 @@ export default function MixerPage() {
       const payload = await res.json();
       const next = normalizePieces(payload);
       if (!canApply()) return;
-      forceFreshAfterMutation.current = false;
+      // Keep forcing this session's later reads: another warm server instance may still hold pre-write data.
       const withBody = next.filter((c) => c.hasBody).length;
       const checkedAt = payload.refreshedAt || payload.syncedAt;
       const when = checkedAt ? new Date(checkedAt).toLocaleString() : "just now";
@@ -474,7 +474,7 @@ export default function MixerPage() {
         }))}
         fieldMode={fieldMode}
         pullQuote={item.section === "view" || item.section === "field" ? item.pullQuote : undefined}
-        canEdit={liveNotion}
+        canEdit={liveNotion && !decisionWrites[item.id]}
         onEditingChange={onBodyEditingChange}
         onSaved={(next) => applyBodySave(item.id, next)}
         onFlash={flash}
