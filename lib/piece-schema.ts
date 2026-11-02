@@ -10,6 +10,7 @@ export const PIECE_PROPS = {
   title: "Name",
   type: "Type",
   status: "Status",
+  pullQuote: "Pull quote",
   /** Current person property (replaces legacy Partner select). */
   people: "People",
   /** Legacy fallback if a workspace still has the select. */

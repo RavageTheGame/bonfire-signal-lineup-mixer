@@ -4,6 +4,7 @@ import { ensureNotionToken } from "./notion-token-store";
 import { PIECE_PROPS, peopleNameToPartnerKey } from "./piece-schema";
 import type { Piece, PiecesPayload } from "./types";
 import { belongsToIssue, requireActiveIssue } from "./issue-workflow";
+import { readPullQuoteProperty } from "./pull-quote";
 
 export const SIGNAL_PIECES_DB =
   process.env.NOTION_PIECES_DATABASE_ID ||
@@ -236,6 +237,7 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
       url: page.url || `https://www.notion.so/${page.id.replace(/-/g, "")}`,
       hasBody,
       bodyHtml,
+      pullQuote: readPullQuoteProperty(props, PIECE_PROPS.pullQuote),
       options,
       optionBodies,
       lastEditedTime: page.last_edited_time,

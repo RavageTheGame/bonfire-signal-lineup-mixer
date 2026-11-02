@@ -27,6 +27,18 @@ Type, People, Related Issue, and copy under a `Draft body` heading. Existing Opt
 toggles remain supported. The mixer continues to provide picking, previewing, and
 body editing.
 
+Bonnie can set the optional plain-text `Pull quote` property on a Piece. The
+Bonfire View and Field Notes previews place it after the second paragraph (or
+after the only paragraph for a short draft), using the existing serif quote
+treatment. Empty properties render nothing. Team takes keep their compact layout.
+Pull quotes are separate from body editing and remain editable in Notion; saving
+the article body in the mixer never copies the display quote into it. For older
+multi-option Pieces, a Piece-level quote appears only with the canonical
+`Draft body`, so it cannot leak into an unrelated alternate option.
+The quote must be an exact excerpt of current body copy. If an edit removes or
+rewrites it, the preview hides the stale excerpt without clearing the property.
+Inline formatting, common HTML entities, and whitespace do not break a match.
+
 Exactly one Signal Issues row must have the `Active issue` checkbox selected.
 The mixer queries only Pieces related to that issue and uses its title in the
 email preview. Historical Pieces remain in Notion. Missing Notion access or an
