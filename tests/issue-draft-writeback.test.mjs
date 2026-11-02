@@ -79,13 +79,14 @@ function fixture() {
         },
         append: async (request) => {
           writes.push(structuredClone(request));
-          const result = request.children.map((child) => ({ ...structuredClone(child), id: `new-${++nextId}`, has_children: false }));
+          const requested = request.children.map((child) => ({ ...structuredClone(child), id: `new-${++nextId}`, has_children: false }));
+          const result = typeof hooks.actualAppendCount === "number" ? requested.slice(0, hooks.actualAppendCount) : requested;
           const tree = trees.get(request.block_id);
           const index = tree.findIndex((item) => item.id === request.after);
           assert.notEqual(index, -1, "new draft is anchored inside the managed region");
           tree.splice(index + 1, 0, ...result);
           await hooks.append?.(request);
-          return { results: structuredClone(result) };
+          return { results: hooks.appendResponse ? hooks.appendResponse(structuredClone(result), structuredClone(tree)) : structuredClone(result) };
         },
       },
       delete: async (request) => {
@@ -164,6 +165,90 @@ test("save assembles current server bodies and commits only the canonical issue 
   assert.ok(content.includes("First paragraph. A supported quotation."));
   assert.ok(content.includes("Early-stage B2B from the inside."));
   assert.ok(!f.writes.some((request) => request.block_id?.startsWith("para-")));
+});
+
+test("legacy mixed append responses never grant ownership of existing boundaries, notes or overview", async () => {
+  for (const failAfterAppend of [false, true]) {
+    const f = fixture();
+    f.trees.get(issueId).push(block("note2", "paragraph", "Second protected human note."), block("note3", "paragraph", "Third protected human note."));
+    const protectedIds = ["overview", "marker", "boundary", "human-note", "note2", "note3"];
+    const original = structuredClone(f.trees.get(issueId).filter((item) => protectedIds.includes(item.id)));
+    // Reproduce the real legacy response: newly created children plus following existing siblings.
+    f.hooks.appendResponse = (created, tree) => [...created, ...tree.filter((item) => protectedIds.includes(item.id))];
+    if (failAfterAppend) f.hooks.append = () => { f.issue.properties["Generation status"].select.name = "Drafting"; };
+    if (failAfterAppend) await assert.rejects(saveIssueDraft(f.client, issueId, f.input(), config), (error) => error.status === 409);
+    else await saveIssueDraft(f.client, issueId, f.input(), config);
+    assert.deepEqual(f.trees.get(issueId).filter((item) => protectedIds.includes(item.id)), original);
+    assert.ok(!f.writes.some((request) => protectedIds.includes(request.block_id)), "existing outside IDs must never be mutated, even during rollback");
+    if (failAfterAppend) {
+      assert.ok(f.trees.get(issueId).filter((item) => item.id.startsWith("new-")).every((item) => item.archived));
+      assert.ok(f.trees.get(issueId).filter((item) => item.id.startsWith("old")).every((item) => !item.archived));
+    }
+  }
+});
+
+test("partial append responses are verified from the paginated tree, not assumed to be complete created-child inventories", async () => {
+  const f = fixture();
+  f.hooks.appendResponse = (created, tree) => [...created.slice(0, 2), ...tree.filter((item) => ["boundary", "human-note"].includes(item.id))];
+  const result = await saveIssueDraft(f.client, issueId, f.input(), config);
+  assert.deepEqual(result.lineup, lineup);
+  assert.ok(!f.writes.some((request) => ["overview", "marker", "boundary", "human-note"].includes(request.block_id)));
+});
+
+test("multi-chunk saves verify every insertion independently even when each append response includes all existing siblings", async () => {
+  const f = fixture();
+  for (let piece = 0; piece < ids.length; piece++) {
+    for (let paragraph = 0; paragraph < 20; paragraph++) f.trees.get(ids[piece]).push(block(`long-${piece}-${paragraph}`, "paragraph", `Saved source paragraph ${piece}.${paragraph}.`));
+  }
+  f.hooks.appendResponse = (_created, tree) => tree;
+  await saveIssueDraft(f.client, issueId, f.input(), config);
+  const appends = f.writes.filter((request) => request.children);
+  assert.equal(appends.length, 2);
+  assert.equal(appends[0].children.length, 100);
+  assert.ok(!f.writes.some((request) => ["overview", "marker", "boundary", "human-note"].includes(request.block_id)));
+  assert.ok(f.trees.get(issueId).filter((item) => item.id.startsWith("new-")).every((item) => !item.archived));
+});
+
+test("a genuinely partial insertion is retained for recovery and mixed response IDs never authorize cleanup", async () => {
+  const f = fixture();
+  f.hooks.actualAppendCount = 5;
+  f.hooks.appendResponse = (created, tree) => [...created, ...tree.filter((item) => ["boundary", "human-note"].includes(item.id))];
+  await assert.rejects(saveIssueDraft(f.client, issueId, f.input(), config), (error) => error.status === 503);
+  assert.ok(f.trees.get(issueId).filter((item) => item.id.startsWith("new-")).every((item) => !item.archived));
+  assert.ok(f.trees.get(issueId).filter((item) => !item.id.startsWith("new-")).every((item) => !item.archived));
+  assert.ok(!f.writes.some((request) => ["overview", "marker", "old1", "old2", "boundary", "human-note"].includes(request.block_id)));
+});
+
+test("concurrent human blocks returned by append remain protected inside and outside the insertion range", async () => {
+  for (const position of ["before", "after", "interleaved", "outside"]) {
+    const f = fixture();
+    f.hooks.append = () => {
+      const tree = f.trees.get(issueId);
+      const first = tree.findIndex((item) => item.id.startsWith("new-"));
+      const boundary = tree.findIndex((item) => item.id === "boundary");
+      const at = position === "before" ? first : position === "interleaved" ? first + 1 : position === "outside" ? boundary + 1 : boundary;
+      tree.splice(at, 0, block("concurrent-human", "paragraph", "Human note added during save."));
+    };
+    f.hooks.appendResponse = (created, tree) => [...created, ...tree.filter((item) => ["boundary", "human-note", "concurrent-human"].includes(item.id))];
+    await assert.rejects(saveIssueDraft(f.client, issueId, f.input(), config), IssueDraftError);
+    assert.equal(f.trees.get(issueId).find((item) => item.id === "concurrent-human").archived, undefined);
+    assert.ok(!f.writes.some((request) => ["overview", "marker", "old1", "old2", "boundary", "human-note", "concurrent-human"].includes(request.block_id)));
+    const staged = f.trees.get(issueId).filter((item) => item.id.startsWith("new-"));
+    assert.ok(staged.every((item) => position === "interleaved" ? !item.archived : item.archived));
+  }
+});
+
+test("ambiguous duplicate content spans establish no cleanup ownership", async () => {
+  const f = fixture();
+  f.hooks.append = () => {
+    const tree = f.trees.get(issueId);
+    const duplicate = tree.filter((item) => item.id.startsWith("new-")).map((item) => ({ ...structuredClone(item), id: `human-${item.id}` }));
+    tree.splice(tree.findIndex((item) => item.id === "boundary"), 0, ...duplicate);
+  };
+  f.hooks.appendResponse = (_created, tree) => tree;
+  await assert.rejects(saveIssueDraft(f.client, issueId, f.input(), config), (error) => error.status === 503);
+  assert.ok(!f.writes.some((request) => request.block_id && !request.children), "ambiguous ownership must never produce a delete or restore call");
+  assert.ok(f.trees.get(issueId).every((item) => !item.archived));
 });
 
 test("stale versions, non-active issues and Bonnie Queued/Drafting are rejected before any write", async () => {

@@ -282,14 +282,72 @@ async function parallelEach<T>(items: T[], fn: (value: T) => Promise<void>): Pro
   if (failures.length) throw failures[0];
 }
 
-async function appendAfter(notion: NotionClient, issueId: string, afterId: string, blocks: DraftBlock[], createdBlocks: NotionBlock[]): Promise<void> {
+/** Compare writable content, ignoring API-added response metadata and default formatting. */
+function appendedContent(block: DraftBlock | NotionBlock): string {
+  const data = block[block.type] as any;
+  const richText = (data?.rich_text || []).map((item: any) => ({
+    type: item.type || "text",
+    content: item.text?.content ?? item.plain_text ?? "",
+    link: item.text?.link?.url ?? item.href ?? null,
+    annotations: {
+      bold: Boolean(item.annotations?.bold), italic: Boolean(item.annotations?.italic),
+      underline: Boolean(item.annotations?.underline), strikethrough: Boolean(item.annotations?.strikethrough),
+      code: Boolean(item.annotations?.code), color: item.annotations?.color || "default",
+    },
+  }));
+  // The API may join adjacent equally formatted text fragments.
+  const merged: typeof richText = [];
+  for (const item of richText) {
+    const previous = merged[merged.length - 1];
+    if (previous && previous.type === item.type && previous.link === item.link
+      && JSON.stringify(previous.annotations) === JSON.stringify(item.annotations)) previous.content += item.content;
+    else merged.push({ ...item });
+  }
+  return JSON.stringify({ type: block.type, richText: merged, color: data?.color || "default",
+    toggleable: Boolean(data?.is_toggleable), hasChildren: Boolean(block.has_children || block.children?.length) });
+}
+
+async function appendAfter(
+  notion: NotionClient,
+  issueId: string,
+  afterId: string,
+  blocks: DraftBlock[],
+  createdBlocks: NotionBlock[],
+  protectedRootIds: ReadonlySet<string>,
+): Promise<void> {
   let after = afterId;
   for (let start = 0; start < blocks.length; start += 100) {
-    const result = await notion.blocks.children.append({ block_id: issueId, after, children: blocks.slice(start, start + 100) as any });
-    const ids = result.results.map((block) => block.id);
-    createdBlocks.push(...result.results as NotionBlock[]);
-    if (ids.length !== Math.min(100, blocks.length - start)) throw new IssueDraftError("Notion did not confirm every new draft block", 503);
-    after = ids[ids.length - 1];
+    const before = await fetchTree(notion, issueId);
+    const beforeIds = new Set(before.map((block) => idKey(block.id)));
+    const anchorIndex = before.findIndex((block) => block.id === after);
+    if (anchorIndex < 0 || !before[anchorIndex + 1]) throw new IssueDraftError("The draft insertion boundary changed. Refresh the issue before retrying.", 409);
+    const nextId = before[anchorIndex + 1].id;
+    const chunk = blocks.slice(start, start + 100);
+    const expected = chunk.map(appendedContent);
+    await notion.blocks.children.append({ block_id: issueId, after, children: chunk as any });
+    // Legacy append responses can include existing following siblings. They are NOT a list
+    // of blocks owned by this request, and must never be used as a deletion allowlist.
+    const latest = await fetchTree(notion, issueId);
+    const left = latest.findIndex((block) => block.id === after);
+    const right = latest.findIndex((block) => block.id === nextId);
+    if (left < 0 || right <= left) throw new IssueDraftError("The draft insertion boundary changed. New copy was retained for review.", 503);
+    const inserted = latest.slice(left + 1, right);
+    const isNew = (block: NotionBlock) => !beforeIds.has(idKey(block.id)) && !protectedRootIds.has(idKey(block.id));
+    const matches: number[] = [];
+    for (let offset = 0; offset + chunk.length <= inserted.length; offset++) {
+      if (chunk.every((_, index) => isNew(inserted[offset + index]) && appendedContent(inserted[offset + index]) === expected[index])) matches.push(offset);
+    }
+    if (matches.length !== 1) {
+      // A partial or interleaved insertion cannot establish ownership of the full chunk.
+      // Retain it for review; even an append response ID cannot authorize its deletion.
+      throw new IssueDraftError("Notion did not confirm the expected new draft copy. Existing content was preserved; review the issue before retrying.", 503);
+    }
+    const owned = inserted.slice(matches[0], matches[0] + chunk.length);
+    createdBlocks.push(...owned);
+    if (matches[0] !== 0 || inserted.length !== chunk.length) {
+      throw new IssueDraftError("New content was added beside the draft while saving. Refresh and review the issue before retrying.", 409);
+    }
+    after = owned[owned.length - 1].id;
   }
 }
 
@@ -309,6 +367,11 @@ export async function saveIssueDraft(
   if (savingIssues.has(key)) throw new IssueDraftError("This issue is already being saved. Wait and refresh.", 409);
   savingIssues.add(key);
   const stagedBlocks: NotionBlock[] = [];
+  // This immutable inventory protects every pre-existing root block even if the API later
+  // returns it from append. Only oldIds may be archived in the normal replacement phase.
+  let protectedRootIds: ReadonlySet<string> = new Set();
+  let markerId = "";
+  let boundaryId = "";
   let oldIds: string[] = [];
   let archivesStarted = false;
   let committed = false;
@@ -328,8 +391,11 @@ export async function saveIssueDraft(
     const current = await readIssueDraftSnapshot(notion, currentIssue);
     if (current.revision !== revision) throw new IssueDraftError("The issue changed in Notion. Refresh and review before saving.", 409);
     const region = locateIssueDraftRegion(current.blocks);
+    protectedRootIds = new Set(current.blocks.map((block) => idKey(block.id)));
+    markerId = region.marker.id;
+    boundaryId = region.boundary.id;
     oldIds = region.content.map((block) => block.id);
-    await appendAfter(notion, issueId, oldIds[oldIds.length - 1] || region.marker.id, blocks, stagedBlocks);
+    await appendAfter(notion, issueId, oldIds[oldIds.length - 1] || region.marker.id, blocks, stagedBlocks, protectedRootIds);
     // A collaborator may edit or bank a Piece while the request is reading the other five.
     // Verify the same server copy is still current before removing any existing issue copy.
     for (let index = 0; index < specs.length; index++) {
@@ -387,12 +453,20 @@ export async function saveIssueDraft(
       try {
         const latestBlocks = await fetchTree(notion, issueId);
         const stagedSet = new Set(stagedBlocks.map((block) => block.id));
-        stagedUnchanged = JSON.stringify(latestBlocks.filter((block) => stagedSet.has(block.id)).map(canonicalBlock)) === JSON.stringify(stagedBlocks.map(canonicalBlock));
+        const marker = latestBlocks.findIndex((block) => block.id === markerId);
+        const boundary = latestBlocks.findIndex((block) => block.id === boundaryId);
+        const stagedInside = latestBlocks.slice(marker + 1, boundary).filter((block) => stagedSet.has(block.id));
+        stagedUnchanged = marker >= 0 && boundary > marker
+          && stagedBlocks.every((block) => !protectedRootIds.has(idKey(block.id)))
+          && JSON.stringify(stagedInside.map(canonicalBlock)) === JSON.stringify(stagedBlocks.map(canonicalBlock));
       } catch { /* An unreadable recovery copy must not be discarded. */ }
       if (!stagedUnchanged) throw new IssueDraftError("The new draft changed during saving. Both copies were retained for review; refresh the issue before retrying.", 503);
       // Keep the new draft as recovery copy if Notion cannot restore every old block.
       if (restored) {
-        try { await parallelEach(stagedBlocks, async (block) => { await notion.blocks.delete({ block_id: block.id }); }); }
+        try { await parallelEach(stagedBlocks, async (block) => {
+          if (protectedRootIds.has(idKey(block.id))) throw new IssueDraftError("Refusing to remove pre-existing issue content", 503);
+          await notion.blocks.delete({ block_id: block.id });
+        }); }
         catch { throw new IssueDraftError("Notion interrupted the save cleanup. Review the Newsletter draft section before retrying.", 503); }
       } else throw new IssueDraftError("Notion interrupted the save. Both draft copies were retained for recovery; review the issue before retrying.", 503);
     }
