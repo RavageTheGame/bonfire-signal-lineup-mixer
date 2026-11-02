@@ -5,6 +5,7 @@ import { PIECE_PROPS, peopleNameToPartnerKey } from "./piece-schema";
 import type { Piece, PiecesPayload } from "./types";
 import { belongsToIssue, requireActiveIssue } from "./issue-workflow";
 import { readPullQuoteProperty } from "./pull-quote";
+import { normalizeEditorialDecision } from "./editorial-decision";
 
 export const SIGNAL_PIECES_DB =
   process.env.NOTION_PIECES_DATABASE_ID ||
@@ -232,6 +233,7 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
       partner: type === "Field Notes" ? "Anonymous" : propPartnerKey(props),
       type,
       status: propSelect(props, PIECE_PROPS.status) || "Draft",
+      editorialDecision: normalizeEditorialDecision(propSelect(props, PIECE_PROPS.editorialDecision)),
       issue: activeIssue.title,
       issueId: activeIssue.id,
       url: page.url || `https://www.notion.so/${page.id.replace(/-/g, "")}`,

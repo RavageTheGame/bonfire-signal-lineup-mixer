@@ -11,6 +11,8 @@ export type Piece = {
   partner: string;
   type: PieceType | string;
   status: string;
+  /** Editorial curation is independent of partner approval in Status. */
+  editorialDecision?: string;
   issue: string | null;
   issueId: string | null;
   url: string;
