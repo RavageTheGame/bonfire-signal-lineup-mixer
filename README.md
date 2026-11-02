@@ -27,6 +27,21 @@ Type, People, Related Issue, and copy under a `Draft body` heading. Existing Opt
 toggles remain supported. The mixer continues to provide picking, previewing, and
 body editing.
 
+The active Issue's hidden `Draft lineup` rich-text property records the exact
+newsletter choices as JSON, with `bigIdeaId`, ordered `teamTakeIds`, and
+`fieldNoteId`. The API resolves these IDs against that issue's available Pieces
+and leaves unsafe or missing slots open. It never guesses choices from prose or
+uses banked or ruled-out content to complete a draft.
+
+Fresh browsers start from that issue draft. Browser choices are saved per issue;
+manual swaps and intentional clears remain custom even when generation changes
+the default. Existing nonempty browser choices migrate as custom. **Load issue
+draft** explicitly restores the current Notion lineup. **Save draft to Notion**
+writes a complete chosen lineup back to the managed newsletter section and its
+JSON mapping, preserving individual Pieces and the Issue's editorial notes.
+Saving requires a current revision and pauses other mutations while in flight.
+Open body edits and alternate Option copy must be resolved before saving.
+
 Each picker card supports **Keep**, **Bank**, and **Rule out** decisions, saved
 to the Piece's `Editorial decision` select property. These are editorial choices
 and do not change partner approval, confidentiality clearance, draft copy or

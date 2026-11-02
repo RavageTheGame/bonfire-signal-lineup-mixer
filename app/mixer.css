@@ -458,6 +458,16 @@ h1 {
   border-top: 1px solid var(--rule);
 }
 
+.draft-save-note {
+  flex-basis: 100%;
+  margin: 0;
+  color: var(--body-2);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.issue-save-error { margin: 0; flex-basis: 100%; }
+.action:disabled { opacity: .5; cursor: not-allowed; }
+
 .toast {
   min-height: 18px;
   padding: 0 16px 14px;

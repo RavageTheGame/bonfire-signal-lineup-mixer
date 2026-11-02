@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { normalizeEditorHtml } from "@/lib/html-notion";
 import { withPullQuote } from "@/lib/pull-quote";
+import { canonicalBodyOption } from "@/lib/body-option";
 
 export type OptionBody = {
   label: string;
@@ -17,6 +18,7 @@ type EditableBodyProps = {
   fieldMode?: boolean;
   canEdit: boolean;
   onEditingChange?: (pieceId: string, editing: boolean) => void;
+  onCanonicalOptionChange?: (pieceId: string, isCanonical: boolean) => void;
   onSaved: (next: {
     bodyHtml: string;
     hasBody: boolean;
@@ -35,10 +37,8 @@ function shortLabel(label: string): string {
 
 function defaultLabel(optionBodies: OptionBody[], fallbackHtml: string): string {
   if (!optionBodies.length) return "Draft";
-  const draft = optionBodies.find((o) => /^draft body$/i.test(o.label) && o.bodyHtml.trim());
-  if (draft) return draft.label;
-  const withCopy = optionBodies.find((o) => o.bodyHtml.trim());
-  if (withCopy) return withCopy.label;
+  const canonical = canonicalBodyOption(optionBodies);
+  if (canonical) return canonical.label;
   if (fallbackHtml.trim() && optionBodies[0]) return optionBodies[0].label;
   return optionBodies[0]?.label || "Draft";
 }
@@ -54,6 +54,7 @@ export function EditableBody({
   pullQuote,
   canEdit,
   onEditingChange,
+  onCanonicalOptionChange,
   onSaved,
   onFlash,
 }: EditableBodyProps) {
@@ -88,6 +89,13 @@ export function EditableBody({
     resolvedOptions[0] ||
     null;
   const activeHtml = active?.bodyHtml || "";
+  const activeLabel = active?.label;
+  const canonicalLabel = canonicalBodyOption(resolvedOptions)?.label;
+  useEffect(() => {
+    // A save response may contain the edited option's HTML; the canonical section stays unchanged.
+    onCanonicalOptionChange?.(pieceId, activeLabel === canonicalLabel);
+    return () => onCanonicalOptionChange?.(pieceId, true);
+  }, [activeLabel, canonicalLabel, onCanonicalOptionChange, pieceId]);
   const showToggle = resolvedOptions.length > 1;
   const previewHtml = withPullQuote(activeHtml, pullQuote, active?.label || "", resolvedOptions.length);
 

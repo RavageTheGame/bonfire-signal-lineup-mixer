@@ -5,7 +5,9 @@ import { PIECE_PROPS, peopleNameToPartnerKey } from "./piece-schema";
 import type { Piece, PiecesPayload } from "./types";
 import { belongsToIssue, requireActiveIssue } from "./issue-workflow";
 import { readPullQuoteProperty } from "./pull-quote";
-import { normalizeEditorialDecision } from "./editorial-decision";
+import { isAvailableCandidate, normalizeEditorialDecision } from "./editorial-decision";
+import { readDraftLineupProperty, resolveDraftLineup } from "./draft-lineup";
+import { readIssueDraftSnapshot } from "./issue-draft-writeback";
 
 export const SIGNAL_PIECES_DB =
   process.env.NOTION_PIECES_DATABASE_ID ||
@@ -128,10 +130,22 @@ async function loadActiveIssue(notion: Client) {
   const page = requireActiveIssue(result.results) as any;
   const props = page.properties || {};
   const titleKey = Object.keys(props).find((key) => props[key]?.type === "title") || "Name";
+  let draftRevision = "";
+  let draftUnavailableReason = "";
+  try {
+    draftRevision = (await readIssueDraftSnapshot(notion, page)).revision;
+  } catch (error) {
+    // Unsafe or missing managed draft boundaries must not prevent reading individual Pieces.
+    draftUnavailableReason = error instanceof Error ? error.message : "The issue draft is not available for saving yet.";
+  }
   return {
     id: page.id as string,
     title: propTitle(props, titleKey),
     url: (page.url || `https://www.notion.so/${page.id.replace(/-/g, "")}`) as string,
+    draftLineupDefinition: readDraftLineupProperty(props, "Draft lineup"),
+    generationStatus: propSelect(props, "Generation status"),
+    draftRevision,
+    draftUnavailableReason,
   };
 }
 
@@ -248,12 +262,14 @@ export async function loadPiecesLive(opts?: { force?: boolean }): Promise<Pieces
   });
 
   const now = new Date().toISOString();
+  const currentPieces = pieces.filter(Boolean) as Piece[];
+  const { draftLineupDefinition, ...issue } = activeIssue;
   const payload: PiecesPayload = {
     syncedAt: now,
     refreshedAt: now,
     source: "notion-live",
-    pieces: pieces.filter(Boolean) as Piece[],
-    issue: activeIssue,
+    pieces: currentPieces,
+    issue: { ...issue, draftLineup: resolveDraftLineup(draftLineupDefinition, currentPieces, isAvailableCandidate) },
   };
   cache = { at: Date.now(), payload };
   return payload;

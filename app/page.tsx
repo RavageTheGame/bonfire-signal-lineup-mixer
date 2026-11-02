@@ -6,7 +6,8 @@ import "./mixer.css";
 import { distinctTeamPieces } from "../lib/lineup";
 import { stripLeadingByline } from "../lib/byline";
 import { isAvailableCandidate, normalizeEditorialDecision, type EditorialDecision } from "../lib/editorial-decision";
-import { reconcilePickerSelection, type PickerSelection } from "../lib/picker-state";
+import { chooseIssuePickerSelection, readPickerSelection, readSavedPickerSelections, reconcilePickerSelection, type PickerSelection, type SavedPickerSelection } from "../lib/picker-state";
+import { parseDraftLineup, resolveDraftLineup } from "../lib/draft-lineup";
 
 type Piece = {
   id: string;
@@ -30,7 +31,8 @@ type DecisionFilter = "available" | "Keep" | "Banked" | "Ruled out";
 
 type SectionKey = "view" | "team" | "field";
 
-const STORAGE_KEY = "bonfireSignalLiveLineup.v1";
+const LEGACY_STORAGE_KEY = "bonfireSignalLiveLineup.v1";
+const STORAGE_KEY = "bonfireSignalLiveLineup.v2";
 const OPEN_SECTIONS_KEY = "bonfireSignalLiveLineup.openSections.v1";
 
 const DEFAULT_OPEN: Record<SectionKey, boolean> = {
@@ -73,16 +75,19 @@ const TYPE_TO_SECTION: Record<string, Piece["section"]> = {
   "Field Notes": "field",
 };
 
-function loadState(): LineupState {
+function loadLegacyState(): LineupState | null {
   try {
-    const saved = JSON.parse(localStorage.getItem(STORAGE_KEY) || "{}");
-    return {
-      view: typeof saved.view === "string" ? saved.view : null,
-      field: typeof saved.field === "string" ? saved.field : null,
-      team: Array.isArray(saved.team) ? saved.team.slice(0, 4) : [],
-    };
+    return readPickerSelection(JSON.parse(localStorage.getItem(LEGACY_STORAGE_KEY) || "null"));
   } catch {
-    return { view: null, field: null, team: [] };
+    return null;
+  }
+}
+
+function loadSavedLineups(): Record<string, SavedPickerSelection> {
+  try {
+    return readSavedPickerSelections(JSON.parse(localStorage.getItem(STORAGE_KEY) || "null"));
+  } catch {
+    return {};
   }
 }
 
@@ -153,6 +158,16 @@ export default function MixerPage() {
   const [hydrated, setHydrated] = useState(false);
   const [liveNotion, setLiveNotion] = useState(false);
   const [issueTitle, setIssueTitle] = useState("Current issue");
+  const [draftLineup, setDraftLineup] = useState<LineupState | null>(null);
+  const [draftRevision, setDraftRevision] = useState("");
+  const [draftUnavailableReason, setDraftUnavailableReason] = useState("");
+  const [generationStatus, setGenerationStatus] = useState("");
+  const [lineupOrigin, setLineupOrigin] = useState<SavedPickerSelection["origin"]>("draft");
+  const [issueSaving, setIssueSaving] = useState(false);
+  const [issueSaveError, setIssueSaveError] = useState("");
+  const [editingCount, setEditingCount] = useState(0);
+  const [alternatePieceIds, setAlternatePieceIds] = useState(new Set<string>());
+  const [draftLoadKey, setDraftLoadKey] = useState(0);
   const controlsRef = useRef<HTMLDivElement | null>(null);
   const scrollLockRef = useRef<{ windowY: number; controlsY: number } | null>(null);
   const editingPieceIds = useRef(new Set<string>());
@@ -160,13 +175,44 @@ export default function MixerPage() {
   const localRevision = useRef(0);
   const refreshSequence = useRef(0);
   const forceFreshAfterMutation = useRef(false);
+  const currentIssueId = useRef("");
+  const currentSelection = useRef<LineupState>({ view: null, field: null, team: [] });
+  const savedLineups = useRef<Record<string, SavedPickerSelection>>({});
+  const legacyLineup = useRef<LineupState | null>(null);
+  const issueSavePending = useRef(false);
   const onBodyEditingChange = useCallback((pieceId: string, editing: boolean) => {
     if (editing) {
       if (!editingPieceIds.current.has(pieceId)) localRevision.current += 1;
       editingPieceIds.current.add(pieceId);
     }
     else editingPieceIds.current.delete(pieceId);
+    setEditingCount(editingPieceIds.current.size);
   }, []);
+  const onCanonicalOptionChange = useCallback((pieceId: string, isCanonical: boolean) => {
+    setAlternatePieceIds((previous) => {
+      if (previous.has(pieceId) === !isCanonical) return previous;
+      const next = new Set(previous);
+      if (isCanonical) next.delete(pieceId);
+      else next.add(pieceId);
+      return next;
+    });
+  }, []);
+
+  const rememberLineup = (selection: LineupState, origin: SavedPickerSelection["origin"], issueId = currentIssueId.current) => {
+    if (!issueId) return;
+    savedLineups.current[issueId] = { origin, selection };
+    setLineupOrigin(origin);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(savedLineups.current));
+    } catch {
+      // The current tab still works if persistent browser storage is unavailable.
+    }
+  };
+  const applyLineup = (selection: LineupState, origin: SavedPickerSelection["origin"], issueId = currentIssueId.current) => {
+    currentSelection.current = selection;
+    setState(selection);
+    rememberLineup(selection, origin, issueId);
+  };
 
   const find = (id: string | null) => candidates.find((item) => item.id === id && isAvailableCandidate(item));
 
@@ -202,14 +248,22 @@ export default function MixerPage() {
     if (controlsRef.current) controlsRef.current.scrollTop = lock.controlsY;
   });
 
-  const persist = (next: LineupState) => {
+  const persist = (next: LineupState, origin: SavedPickerSelection["origin"] = "custom") => {
+    if (issueSavePending.current) {
+      flash("Wait for the issue draft to finish saving.");
+      return false;
+    }
     if (editingPieceIds.current.size) {
       flash("Save or cancel the open body edit before changing the lineup.");
       return false;
     }
+    if (!currentIssueId.current) {
+      flash("Wait for the current issue to load.");
+      return false;
+    }
+    localRevision.current += 1;
     preserveScroll(() => {
-      setState(next);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      applyLineup(next, origin);
     });
     return true;
   };
@@ -226,17 +280,17 @@ export default function MixerPage() {
 
   const refreshPieces = useCallback(async (reason: string) => {
     // Keep a pending response or an external decision from discarding an open editor.
-    if (editingPieceIds.current.size || pendingDecisionIds.current.size) {
+    if (editingPieceIds.current.size || pendingDecisionIds.current.size || issueSavePending.current) {
       if (reason === "manual") flash(editingPieceIds.current.size
         ? "Save or cancel the open body edit before refreshing."
-        : "Wait for the editorial decision to finish saving.");
+        : "Wait for the current save to finish.");
       return;
     }
     const requestSequence = ++refreshSequence.current;
     const revisionAtStart = localRevision.current;
     const canApply = () => requestSequence === refreshSequence.current
       && revisionAtStart === localRevision.current
-      && !editingPieceIds.current.size && !pendingDecisionIds.current.size;
+      && !editingPieceIds.current.size && !pendingDecisionIds.current.size && !issueSavePending.current;
     try {
       // A completed write can invalidate a fetch even after its pending flag clears.
       const force = reason === "manual" || forceFreshAfterMutation.current;
@@ -247,6 +301,10 @@ export default function MixerPage() {
       const payload = await res.json();
       const next = normalizePieces(payload);
       if (!canApply()) return;
+      const issueId = typeof payload.issue?.id === "string" ? payload.issue.id : "";
+      if (!issueId) throw new Error("No active issue in response");
+      const recommended = readPickerSelection(payload.issue?.draftLineup);
+      const choice = chooseIssuePickerSelection(savedLineups.current[issueId] || null, legacyLineup.current, recommended, next, isAvailableCandidate);
       // Keep forcing this session's later reads: another warm server instance may still hold pre-write data.
       const withBody = next.filter((c) => c.hasBody).length;
       const checkedAt = payload.refreshedAt || payload.syncedAt;
@@ -264,18 +322,19 @@ export default function MixerPage() {
 
       preserveScroll(() => {
         setCandidates(next);
+        currentIssueId.current = issueId;
+        setDraftLineup(recommended);
+        setDraftRevision(typeof payload.issue?.draftRevision === "string" ? payload.issue.draftRevision : "");
+        setDraftUnavailableReason(typeof payload.issue?.draftUnavailableReason === "string" ? payload.issue.draftUnavailableReason : "");
+        setGenerationStatus(typeof payload.issue?.generationStatus === "string" ? payload.issue.generationStatus : "");
         setIssueTitle(payload.issue?.title || "Current issue");
         setLiveNotion(payload.source === "notion-live");
         setSyncNote(
           `${source} · <strong>${next.length}</strong> Pieces · ${withBody} with draft body · checked ${when}` +
             reasonNote +
-            ". Picks stay in this browser only.",
+            ". Swaps stay in this browser until you save the draft to Notion.",
         );
-        setState((prev) => {
-          const cleaned = reconcilePickerSelection(prev, next, isAvailableCandidate);
-          localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
-          return cleaned;
-        });
+        applyLineup(choice.selection, choice.origin, issueId);
       });
 
       if (reason === "manual") {
@@ -290,13 +349,17 @@ export default function MixerPage() {
       setCandidates([]);
       setLiveNotion(false);
       setIssueTitle("Current issue");
+      setDraftLineup(null);
+      setDraftRevision("");
+      setGenerationStatus("");
       setSyncNote("Could not load the active issue. Check Signal Issues in Notion and refresh.");
       if (reason === "manual") flash("Refresh failed — try again.");
     }
   }, []);
 
   useEffect(() => {
-    setState(loadState());
+    savedLineups.current = loadSavedLineups();
+    legacyLineup.current = loadLegacyState();
     setOpenSections(loadOpenSections());
     setHydrated(true);
     void refreshPieces("boot");
@@ -329,6 +392,17 @@ export default function MixerPage() {
   const field = find(state.field);
   const team = state.team.map(find).filter(Boolean) as Piece[];
   const isComplete = Boolean(view && field && distinctTeamPieces(team).length === 4);
+  const decisionSaving = Object.values(decisionWrites).some(Boolean);
+  const selectedIds = [state.view, state.field, ...state.team].filter((id): id is string => Boolean(id));
+  const hasAlternateOption = selectedIds.some((id) => alternatePieceIds.has(id));
+  const draftSaveBlockedReason = !liveNotion ? "Connect Notion to save the issue draft."
+    : ["Queued", "Drafting"].includes(generationStatus) ? "Bonnie is working on this issue. Wait for generation to finish before saving."
+    : editingCount ? "Save or cancel open body edits first."
+    : decisionSaving ? "Wait for editorial decisions to finish saving."
+    : !isComplete ? "Choose one View, four different Team voices and one Field Note to save a draft."
+    : hasAlternateOption ? "Choose each Piece's main draft before saving the issue to Notion."
+    : !draftRevision ? draftUnavailableReason || "Refresh to load the latest issue draft before saving."
+    : "";
 
   const contributorNames = () => {
     const ordered: string[] = [];
@@ -361,7 +435,7 @@ export default function MixerPage() {
   };
 
   const saveDecision = async (item: Piece, decision: EditorialDecision) => {
-    if (!liveNotion || pendingDecisionIds.current.has(item.id)) return;
+    if (!liveNotion || pendingDecisionIds.current.has(item.id) || issueSavePending.current) return;
     if (editingPieceIds.current.has(item.id)) {
       flash("Save or cancel this Piece's body edit before changing its decision.");
       return;
@@ -386,17 +460,17 @@ export default function MixerPage() {
         setCandidates((previous) => previous.map((piece) => piece.id === item.id
           ? { ...piece, editorialDecision: decision }
           : piece));
-        if (!isAvailableCandidate({ ...item, editorialDecision: decision })) {
-          setState((previous) => {
-            const next = {
+        const previous = currentSelection.current;
+          if (!isAvailableCandidate({ ...item, editorialDecision: decision })) {
+            const next: LineupState = {
               view: previous.view === item.id ? null : previous.view,
               field: previous.field === item.id ? null : previous.field,
               team: previous.team.filter((id) => id !== item.id),
             };
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-            return next;
-          });
-        }
+            applyLineup(next, savedLineups.current[currentIssueId.current]?.origin || "custom");
+          } else if (decision === "Keep" && (previous.view === item.id || previous.field === item.id || previous.team.includes(item.id))) {
+            rememberLineup(previous, "custom");
+          }
       });
       if (!isAvailableCandidate({ ...item, editorialDecision: decision }) || decisionFilter !== "available") {
         document.getElementById("editorial-filter")?.focus({ preventScroll: true });
@@ -411,6 +485,43 @@ export default function MixerPage() {
     } finally {
       pendingDecisionIds.current.delete(item.id);
       setDecisionWrites((previous) => ({ ...previous, [item.id]: false }));
+    }
+  };
+
+  const saveIssueDraft = async () => {
+    if (issueSavePending.current || editingPieceIds.current.size || pendingDecisionIds.current.size || draftSaveBlockedReason) return;
+    const issueId = currentIssueId.current;
+    const selection = { view: state.view, team: [...state.team], field: state.field };
+    issueSavePending.current = true;
+    localRevision.current += 1;
+    setIssueSaving(true);
+    setIssueSaveError("");
+    try {
+      const response = await fetch(`/api/issues/${encodeURIComponent(issueId)}/draft`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lineup: { bigIdeaId: selection.view, teamTakeIds: selection.team, fieldNoteId: selection.field }, revision: draftRevision }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(response.status === 409
+        ? `${payload.error || "The issue changed in Notion."} Refresh before saving again.`
+        : payload.error || `Issue draft save failed (${response.status})`);
+      const saved = resolveDraftLineup(parseDraftLineup(JSON.stringify(payload.lineup)), candidates, isAvailableCandidate);
+      if (payload.ok !== true || payload.issueId !== issueId || !saved || !payload.revision) {
+        throw new Error("Notion did not confirm the saved draft. Refresh to check it before trying again.");
+      }
+      setDraftLineup(saved);
+      setDraftRevision(payload.revision);
+      setDraftUnavailableReason("");
+      applyLineup(saved, "draft", issueId);
+      setDraftLoadKey((previous) => previous + 1);
+      forceFreshAfterMutation.current = true;
+      flash("Issue draft saved to Notion. Individual Pieces are unchanged.");
+    } catch (error) {
+      setIssueSaveError(error instanceof Error ? error.message : "Could not save the issue draft.");
+    } finally {
+      issueSavePending.current = false;
+      setIssueSaving(false);
     }
   };
 
@@ -466,6 +577,7 @@ export default function MixerPage() {
       : html;
     return (
       <EditableBody
+        key={`${item.id}:${draftLoadKey}`}
         pieceId={item.id}
         bodyHtml={previewBody(item.bodyHtml)}
         optionBodies={item.optionBodies.map((option) => ({
@@ -474,8 +586,9 @@ export default function MixerPage() {
         }))}
         fieldMode={fieldMode}
         pullQuote={item.section === "view" || item.section === "field" ? item.pullQuote : undefined}
-        canEdit={liveNotion && !decisionWrites[item.id]}
+        canEdit={liveNotion && !decisionWrites[item.id] && !issueSaving}
         onEditingChange={onBodyEditingChange}
+        onCanonicalOptionChange={onCanonicalOptionChange}
         onSaved={(next) => applyBodySave(item.id, next)}
         onFlash={flash}
       />
@@ -644,20 +757,20 @@ export default function MixerPage() {
                                 {isAvailableCandidate(item) ? (
                                   <>
                                     <button type="button" className="decision-action" aria-pressed={item.editorialDecision === "Keep"}
-                                      aria-label={`Keep ${item.title}`} disabled={!liveNotion || decisionWrites[item.id]}
+                                      aria-label={`Keep ${item.title}`} disabled={!liveNotion || decisionWrites[item.id] || issueSaving}
                                       onClick={() => void saveDecision(item, item.editorialDecision === "Keep" ? "" : "Keep")}>
                                       {item.editorialDecision === "Keep" ? "Kept" : "Keep"}
                                     </button>
                                     <button type="button" className="decision-action" aria-label={`Bank ${item.title}`}
-                                      disabled={!liveNotion || decisionWrites[item.id]} onClick={() => void saveDecision(item, "Banked")}>Bank</button>
+                                      disabled={!liveNotion || decisionWrites[item.id] || issueSaving} onClick={() => void saveDecision(item, "Banked")}>Bank</button>
                                     <button type="button" className="decision-action" aria-label={`Rule out ${item.title}`}
-                                      disabled={!liveNotion || decisionWrites[item.id]} onClick={() => void saveDecision(item, "Ruled out")}>Rule out</button>
+                                      disabled={!liveNotion || decisionWrites[item.id] || issueSaving} onClick={() => void saveDecision(item, "Ruled out")}>Rule out</button>
                                   </>
                                 ) : (
                                   <>
                                     <span className="decision-state">{item.editorialDecision}</span>
                                     <button type="button" className="decision-action" aria-label={`Restore ${item.title}`}
-                                      disabled={!liveNotion || decisionWrites[item.id]} onClick={() => void saveDecision(item, "")}>Restore</button>
+                                      disabled={!liveNotion || decisionWrites[item.id] || issueSaving} onClick={() => void saveDecision(item, "")}>Restore</button>
                                   </>
                                 )}
                                 {decisionWrites[item.id] ? <span className="decision-saving" role="status">Saving…</span> : null}
@@ -675,6 +788,23 @@ export default function MixerPage() {
             )}
           </div>
           <div className="actions">
+            <button type="button" className="action" disabled={!draftLineup || editingCount > 0 || decisionSaving || issueSaving}
+              onClick={() => {
+                if (draftLineup && persist(reconcilePickerSelection(draftLineup, candidates, isAvailableCandidate), "draft")) {
+                  setDraftLoadKey((previous) => previous + 1);
+                  setIssueSaveError("");
+                  flash("Loaded the issue draft from Notion.");
+                }
+              }}>
+              Load issue draft
+            </button>
+            <button type="button" className="action primary" disabled={Boolean(draftSaveBlockedReason) || issueSaving}
+              onClick={() => void saveIssueDraft()}>
+              {issueSaving ? "Saving issue draft…" : "Save draft to Notion"}
+            </button>
+            <p className="draft-save-note" role="status">{issueSaving ? "Saving the selected lineup to the issue page."
+              : draftSaveBlockedReason || (lineupOrigin === "draft" && draftLineup ? "Showing the issue draft. Swap any available Piece to try another lineup." : "Your lineup is saved in this browser. Save it to Notion when ready.")}</p>
+            {issueSaveError ? <p className="decision-error issue-save-error" role="alert">{issueSaveError}</p> : null}
             <button
               type="button"
               className="action"
@@ -686,7 +816,7 @@ export default function MixerPage() {
             </button>
             <button
               type="button"
-              className="action primary"
+              className="action"
               onClick={() => {
                 const views = bySection("view", "available");
                 const fields = bySection("field", "available");
