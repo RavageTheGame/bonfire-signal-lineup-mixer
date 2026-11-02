@@ -16,6 +16,7 @@ type EditableBodyProps = {
   optionBodies?: OptionBody[];
   fieldMode?: boolean;
   canEdit: boolean;
+  onEditingChange?: (pieceId: string, editing: boolean) => void;
   onSaved: (next: {
     bodyHtml: string;
     hasBody: boolean;
@@ -52,6 +53,7 @@ export function EditableBody({
   fieldMode = false,
   pullQuote,
   canEdit,
+  onEditingChange,
   onSaved,
   onFlash,
 }: EditableBodyProps) {
@@ -68,6 +70,11 @@ export function EditableBody({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
   const editorRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    onEditingChange?.(pieceId, editing);
+    return () => onEditingChange?.(pieceId, false);
+  }, [editing, onEditingChange, pieceId]);
 
   useEffect(() => {
     // Keep selection valid when pieces refresh

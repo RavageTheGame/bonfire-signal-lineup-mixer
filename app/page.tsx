@@ -5,6 +5,8 @@ import { EditableBody } from "./components/EditableBody";
 import "./mixer.css";
 import { distinctTeamPieces } from "../lib/lineup";
 import { stripLeadingByline } from "../lib/byline";
+import { isAvailableCandidate, normalizeEditorialDecision, type EditorialDecision } from "../lib/editorial-decision";
+import { reconcilePickerSelection, type PickerSelection } from "../lib/picker-state";
 
 type Piece = {
   id: string;
@@ -18,15 +20,13 @@ type Piece = {
   hasBody: boolean;
   bodyHtml: string;
   pullQuote?: string;
+  editorialDecision?: EditorialDecision;
   options: string[];
   optionBodies: { label: string; bodyHtml: string }[];
 };
 
-type LineupState = {
-  view: string | null;
-  field: string | null;
-  team: string[];
-};
+type LineupState = PickerSelection;
+type DecisionFilter = "available" | "Keep" | "Banked" | "Ruled out";
 
 type SectionKey = "view" | "team" | "field";
 
@@ -127,6 +127,7 @@ function normalizePieces(payload: { pieces?: any[] }): Piece[] {
         hasBody: Boolean(item.hasBody ?? (bodyHtml || optionBodies.some((o) => o.bodyHtml.trim()))),
         bodyHtml,
         pullQuote: typeof item.pullQuote === "string" ? item.pullQuote : "",
+        editorialDecision: normalizeEditorialDecision(item.editorialDecision),
         options: Array.isArray(item.options) ? item.options : optionBodies.map((o) => o.label),
         optionBodies,
       };
@@ -142,6 +143,9 @@ function issueMetaLine(issueLabel: string) {
 export default function MixerPage() {
   const [candidates, setCandidates] = useState<Piece[]>([]);
   const [statusFilter, setStatusFilter] = useState("all");
+  const [decisionFilter, setDecisionFilter] = useState<DecisionFilter>("available");
+  const [decisionWrites, setDecisionWrites] = useState<Record<string, boolean>>({});
+  const [decisionErrors, setDecisionErrors] = useState<Record<string, string>>({});
   const [state, setState] = useState<LineupState>({ view: null, field: null, team: [] });
   const [openSections, setOpenSections] = useState<Record<SectionKey, boolean>>(DEFAULT_OPEN);
   const [syncNote, setSyncNote] = useState("Loading Pieces from Notion…");
@@ -151,12 +155,25 @@ export default function MixerPage() {
   const [issueTitle, setIssueTitle] = useState("Current issue");
   const controlsRef = useRef<HTMLDivElement | null>(null);
   const scrollLockRef = useRef<{ windowY: number; controlsY: number } | null>(null);
+  const editingPieceIds = useRef(new Set<string>());
+  const pendingDecisionIds = useRef(new Set<string>());
+  const localRevision = useRef(0);
+  const refreshSequence = useRef(0);
+  const forceFreshAfterMutation = useRef(false);
+  const onBodyEditingChange = useCallback((pieceId: string, editing: boolean) => {
+    if (editing) {
+      if (!editingPieceIds.current.has(pieceId)) localRevision.current += 1;
+      editingPieceIds.current.add(pieceId);
+    }
+    else editingPieceIds.current.delete(pieceId);
+  }, []);
 
-  const find = (id: string | null) => candidates.find((item) => item.id === id);
+  const find = (id: string | null) => candidates.find((item) => item.id === id && isAvailableCandidate(item));
 
-  const bySection = (section: Piece["section"]) =>
+  const bySection = (section: Piece["section"], filter: DecisionFilter = decisionFilter) =>
     candidates.filter((item) => {
       if (item.section !== section) return false;
+      if (filter === "available" ? !isAvailableCandidate(item) : item.editorialDecision !== filter) return false;
       if (statusFilter !== "all" && item.status !== statusFilter) return false;
       return true;
     });
@@ -186,10 +203,15 @@ export default function MixerPage() {
   });
 
   const persist = (next: LineupState) => {
+    if (editingPieceIds.current.size) {
+      flash("Save or cancel the open body edit before changing the lineup.");
+      return false;
+    }
     preserveScroll(() => {
       setState(next);
       localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
     });
+    return true;
   };
 
   const toggleSection = (key: SectionKey) => {
@@ -203,14 +225,29 @@ export default function MixerPage() {
   };
 
   const refreshPieces = useCallback(async (reason: string) => {
+    // Keep a pending response or an external decision from discarding an open editor.
+    if (editingPieceIds.current.size || pendingDecisionIds.current.size) {
+      if (reason === "manual") flash(editingPieceIds.current.size
+        ? "Save or cancel the open body edit before refreshing."
+        : "Wait for the editorial decision to finish saving.");
+      return;
+    }
+    const requestSequence = ++refreshSequence.current;
+    const revisionAtStart = localRevision.current;
+    const canApply = () => requestSequence === refreshSequence.current
+      && revisionAtStart === localRevision.current
+      && !editingPieceIds.current.size && !pendingDecisionIds.current.size;
     try {
-      const force = reason === "manual";
+      // A completed write can invalidate a fetch even after its pending flag clears.
+      const force = reason === "manual" || forceFreshAfterMutation.current;
       const qs = new URLSearchParams({ t: String(Date.now()) });
       if (force) qs.set("force", "1");
       const res = await fetch(`/api/pieces?${qs}`, { cache: "no-store" });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const payload = await res.json();
       const next = normalizePieces(payload);
+      if (!canApply()) return;
+      forceFreshAfterMutation.current = false;
       const withBody = next.filter((c) => c.hasBody).length;
       const checkedAt = payload.refreshedAt || payload.syncedAt;
       const when = checkedAt ? new Date(checkedAt).toLocaleString() : "just now";
@@ -235,13 +272,7 @@ export default function MixerPage() {
             ". Picks stay in this browser only.",
         );
         setState((prev) => {
-          const cleaned: LineupState = {
-            view: prev.view && next.some((p) => p.id === prev.view) ? prev.view : null,
-            field: prev.field && next.some((p) => p.id === prev.field) ? prev.field : null,
-            team: distinctTeamPieces(
-              prev.team.map((id) => next.find((p) => p.id === id)).filter((p): p is Piece => Boolean(p)),
-            ).map((p) => p.id),
-          };
+          const cleaned = reconcilePickerSelection(prev, next, isAvailableCandidate);
           localStorage.setItem(STORAGE_KEY, JSON.stringify(cleaned));
           return cleaned;
         });
@@ -255,10 +286,10 @@ export default function MixerPage() {
         );
       }
     } catch {
+      if (!canApply()) return;
       setCandidates([]);
       setLiveNotion(false);
       setIssueTitle("Current issue");
-      setState({ view: null, field: null, team: [] });
       setSyncNote("Could not load the active issue. Check Signal Issues in Notion and refresh.");
       if (reason === "manual") flash("Refresh failed — try again.");
     }
@@ -314,6 +345,7 @@ export default function MixerPage() {
   const names = contributorNames();
 
   const handlePick = (item: Piece, checked: boolean) => {
+    if (!isAvailableCandidate(item)) return;
     if (item.section === "team") {
       let nextTeam = [...state.team];
       if (checked) {
@@ -325,6 +357,60 @@ export default function MixerPage() {
       persist({ ...state, team: nextTeam });
     } else {
       persist({ ...state, [item.section]: item.id });
+    }
+  };
+
+  const saveDecision = async (item: Piece, decision: EditorialDecision) => {
+    if (!liveNotion || pendingDecisionIds.current.has(item.id)) return;
+    if (editingPieceIds.current.has(item.id)) {
+      flash("Save or cancel this Piece's body edit before changing its decision.");
+      return;
+    }
+    pendingDecisionIds.current.add(item.id);
+    localRevision.current += 1;
+    setDecisionWrites((previous) => ({ ...previous, [item.id]: true }));
+    setDecisionErrors((previous) => ({ ...previous, [item.id]: "" }));
+    try {
+      const response = await fetch(`/api/pieces/${encodeURIComponent(item.id)}/decision`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ decision: decision || null }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || `Decision save failed (${response.status})`);
+      if (payload.ok !== true || payload.id !== item.id || payload.decision !== decision) {
+        throw new Error("Notion did not confirm this decision. Please refresh and try again.");
+      }
+      forceFreshAfterMutation.current = true;
+      preserveScroll(() => {
+        setCandidates((previous) => previous.map((piece) => piece.id === item.id
+          ? { ...piece, editorialDecision: decision }
+          : piece));
+        if (!isAvailableCandidate({ ...item, editorialDecision: decision })) {
+          setState((previous) => {
+            const next = {
+              view: previous.view === item.id ? null : previous.view,
+              field: previous.field === item.id ? null : previous.field,
+              team: previous.team.filter((id) => id !== item.id),
+            };
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+            return next;
+          });
+        }
+      });
+      if (!isAvailableCandidate({ ...item, editorialDecision: decision }) || decisionFilter !== "available") {
+        document.getElementById("editorial-filter")?.focus({ preventScroll: true });
+      }
+      flash(decision === "Banked" ? "Banked. You can restore it from the Banked filter."
+        : decision === "Ruled out" ? "Ruled out. You can restore it from the Ruled out filter."
+        : decision === "Keep" ? "Marked Keep in Notion. Partner approval is unchanged."
+        : "Editorial decision cleared in Notion.");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "Could not save the editorial decision.";
+      setDecisionErrors((previous) => ({ ...previous, [item.id]: message }));
+    } finally {
+      pendingDecisionIds.current.delete(item.id);
+      setDecisionWrites((previous) => ({ ...previous, [item.id]: false }));
     }
   };
 
@@ -357,6 +443,8 @@ export default function MixerPage() {
       options: string[];
     },
   ) => {
+    localRevision.current += 1;
+    forceFreshAfterMutation.current = true;
     setCandidates((prev) =>
       prev.map((piece) =>
         piece.id === pieceId
@@ -387,6 +475,7 @@ export default function MixerPage() {
         fieldMode={fieldMode}
         pullQuote={item.section === "view" || item.section === "field" ? item.pullQuote : undefined}
         canEdit={liveNotion}
+        onEditingChange={onBodyEditingChange}
         onSaved={(next) => applyBodySave(item.id, next)}
         onFlash={flash}
       />
@@ -416,7 +505,10 @@ export default function MixerPage() {
             </p>
           ) : null}
         </div>
-        <div className="state-note" dangerouslySetInnerHTML={{ __html: syncNote }} />
+        <div className="state-note" dangerouslySetInnerHTML={{ __html: syncNote.replace(
+          /<strong>\d+<\/strong> Pieces · \d+ with draft body/,
+          `<strong>${candidates.filter(isAvailableCandidate).length}</strong> available Pieces · ${candidates.filter((piece) => isAvailableCandidate(piece) && piece.hasBody).length} with draft body${candidates.some((piece) => !isAvailableCandidate(piece)) ? ` · ${candidates.filter((piece) => !isAvailableCandidate(piece)).length} banked or ruled out` : ""}`,
+        ) }} />
       </header>
 
       <section className="workspace" aria-label="Signal lineup mixer">
@@ -448,6 +540,18 @@ export default function MixerPage() {
             >
               Refresh now
             </button>
+          </div>
+          <div className="decision-filter">
+            <label htmlFor="editorial-filter">Show</label>
+            <select id="editorial-filter" value={decisionFilter} onChange={(event) => {
+              preserveScroll(() => setDecisionFilter(event.target.value as DecisionFilter));
+            }}>
+              <option value="available">Available options</option>
+              <option value="Keep">Kept</option>
+              <option value="Banked">Banked</option>
+              <option value="Ruled out">Ruled out</option>
+            </select>
+            <span>Keep is separate from partner approval.</span>
           </div>
           <div className="controls" ref={controlsRef}>
             {!candidates.length ? (
@@ -485,12 +589,12 @@ export default function MixerPage() {
                               section.key === "team"
                                 ? state.team.includes(item.id)
                                 : state[section.key] === item.id;
-                            const disabled = section.key === "team" && !checked && teamCount >= 4
-                              && !team.some((selected) => selected.partner === item.partner);
+                            const disabled = !isAvailableCandidate(item) || (section.key === "team" && !checked && teamCount >= 4
+                              && !team.some((selected) => selected.partner === item.partner));
                             const id = `pick-${item.id}`;
                             return (
+                              <div className="option-row" key={item.id}>
                               <label
-                                key={item.id}
                                 className={`option ${disabled ? "is-disabled" : ""} ${checked ? "is-on" : ""}`}
                                 data-kind={section.type}
                                 htmlFor={id}
@@ -536,6 +640,30 @@ export default function MixerPage() {
                                   </span>
                                 </span>
                               </label>
+                              <div className="decision-actions" aria-label={`Editorial decision for ${item.title}`}>
+                                {isAvailableCandidate(item) ? (
+                                  <>
+                                    <button type="button" className="decision-action" aria-pressed={item.editorialDecision === "Keep"}
+                                      aria-label={`Keep ${item.title}`} disabled={!liveNotion || decisionWrites[item.id]}
+                                      onClick={() => void saveDecision(item, item.editorialDecision === "Keep" ? "" : "Keep")}>
+                                      {item.editorialDecision === "Keep" ? "Kept" : "Keep"}
+                                    </button>
+                                    <button type="button" className="decision-action" aria-label={`Bank ${item.title}`}
+                                      disabled={!liveNotion || decisionWrites[item.id]} onClick={() => void saveDecision(item, "Banked")}>Bank</button>
+                                    <button type="button" className="decision-action" aria-label={`Rule out ${item.title}`}
+                                      disabled={!liveNotion || decisionWrites[item.id]} onClick={() => void saveDecision(item, "Ruled out")}>Rule out</button>
+                                  </>
+                                ) : (
+                                  <>
+                                    <span className="decision-state">{item.editorialDecision}</span>
+                                    <button type="button" className="decision-action" aria-label={`Restore ${item.title}`}
+                                      disabled={!liveNotion || decisionWrites[item.id]} onClick={() => void saveDecision(item, "")}>Restore</button>
+                                  </>
+                                )}
+                                {decisionWrites[item.id] ? <span className="decision-saving" role="status">Saving…</span> : null}
+                              </div>
+                              {decisionErrors[item.id] ? <p className="decision-error" role="alert">{decisionErrors[item.id]}</p> : null}
+                              </div>
                             );
                           })
                         )}
@@ -551,8 +679,7 @@ export default function MixerPage() {
               type="button"
               className="action"
               onClick={() => {
-                persist({ view: null, field: null, team: [] });
-                flash("Lineup cleared.");
+                if (persist({ view: null, field: null, team: [] })) flash("Lineup cleared.");
               }}
             >
               Clear lineup
@@ -561,9 +688,9 @@ export default function MixerPage() {
               type="button"
               className="action primary"
               onClick={() => {
-                const views = bySection("view");
-                const fields = bySection("field");
-                const teams = bySection("team");
+                const views = bySection("view", "available");
+                const fields = bySection("field", "available");
+                const teams = bySection("team", "available");
                 if (!views.length || !fields.length || distinctTeamPieces(teams).length < 4) {
                   flash("Need 1 View, 4 different team voices, and 1 Field Note.");
                   return;
@@ -577,12 +704,12 @@ export default function MixerPage() {
                   }
                   return out;
                 };
-                persist({
+                const picked = persist({
                   view: pick(views, 1)[0].id,
                   field: pick(fields, 1)[0].id,
                   team: distinctTeamPieces(pick(teams, teams.length)).slice(0, 4).map((item) => item.id),
                 });
-                flash("Complete lineup selected.");
+                if (picked) flash("Complete lineup selected.");
               }}
             >
               Random complete lineup

@@ -27,6 +27,19 @@ Type, People, Related Issue, and copy under a `Draft body` heading. Existing Opt
 toggles remain supported. The mixer continues to provide picking, previewing, and
 body editing.
 
+Each picker card supports **Keep**, **Bank**, and **Rule out** decisions, saved
+to the Piece's `Editorial decision` select property. These are editorial choices
+and do not change partner approval, confidentiality clearance, draft copy or
+sources. Available options is the default picker view. Banked and ruled-out
+Pieces remain accessible through the Show filter, where Restore clears the
+decision without deleting a record. Keep can be toggled off independently.
+
+Regenerated candidates are added to the available pool while existing lineup
+IDs remain selected. Banking or ruling out a selected Piece clears only that
+slot after Notion confirms the write. Hidden Pieces never enter a random lineup.
+Save or cancel an open body edit before changing its decision or lineup; refresh
+is paused while an editor or decision save is active to protect unfinished work.
+
 Bonnie can set the optional plain-text `Pull quote` property on a Piece. The
 Bonfire View and Field Notes previews place it after the second paragraph (or
 after the only paragraph for a short draft), using the existing serif quote

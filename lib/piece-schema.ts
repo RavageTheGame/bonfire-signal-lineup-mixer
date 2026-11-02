@@ -10,6 +10,7 @@ export const PIECE_PROPS = {
   title: "Name",
   type: "Type",
   status: "Status",
+  editorialDecision: "Editorial decision",
   pullQuote: "Pull quote",
   /** Current person property (replaces legacy Partner select). */
   people: "People",
