@@ -16,6 +16,8 @@ export type Piece = {
   url: string;
   hasBody: boolean;
   bodyHtml: string;
+  /** Display-ready editorial pull quote, separate from the editable body. */
+  pullQuote?: string;
   /** Section labels (Draft body / Option 1 / …) for quick checks. */
   options: string[];
   /** Per-section bodies so the mixer can toggle Option 1 vs Option 2. */

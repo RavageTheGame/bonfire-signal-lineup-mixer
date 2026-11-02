@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { normalizeEditorHtml } from "@/lib/html-notion";
+import { withPullQuote } from "@/lib/pull-quote";
 
 export type OptionBody = {
   label: string;
@@ -11,6 +12,7 @@ export type OptionBody = {
 type EditableBodyProps = {
   pieceId: string;
   bodyHtml: string;
+  pullQuote?: string;
   optionBodies?: OptionBody[];
   fieldMode?: boolean;
   canEdit: boolean;
@@ -48,6 +50,7 @@ export function EditableBody({
   bodyHtml,
   optionBodies = [],
   fieldMode = false,
+  pullQuote,
   canEdit,
   onSaved,
   onFlash,
@@ -79,6 +82,7 @@ export function EditableBody({
     null;
   const activeHtml = active?.bodyHtml || "";
   const showToggle = resolvedOptions.length > 1;
+  const previewHtml = withPullQuote(activeHtml, pullQuote, active?.label || "", resolvedOptions.length);
 
   useEffect(() => {
     if (!editing || !editorRef.current) return;
@@ -192,7 +196,7 @@ export function EditableBody({
       ) : activeHtml.trim() ? (
         <div
           className={`body-copy ${fieldMode ? "field" : ""}`}
-          dangerouslySetInnerHTML={{ __html: activeHtml }}
+          dangerouslySetInnerHTML={{ __html: previewHtml }}
         />
       ) : (
         <div className="placeholder">

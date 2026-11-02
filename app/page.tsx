@@ -17,6 +17,7 @@ type Piece = {
   url: string;
   hasBody: boolean;
   bodyHtml: string;
+  pullQuote?: string;
   options: string[];
   optionBodies: { label: string; bodyHtml: string }[];
 };
@@ -125,6 +126,7 @@ function normalizePieces(payload: { pieces?: any[] }): Piece[] {
         url: item.url,
         hasBody: Boolean(item.hasBody ?? (bodyHtml || optionBodies.some((o) => o.bodyHtml.trim()))),
         bodyHtml,
+        pullQuote: typeof item.pullQuote === "string" ? item.pullQuote : "",
         options: Array.isArray(item.options) ? item.options : optionBodies.map((o) => o.label),
         optionBodies,
       };
@@ -383,6 +385,7 @@ export default function MixerPage() {
           bodyHtml: previewBody(option.bodyHtml),
         }))}
         fieldMode={fieldMode}
+        pullQuote={item.section === "view" || item.section === "field" ? item.pullQuote : undefined}
         canEdit={liveNotion}
         onSaved={(next) => applyBodySave(item.id, next)}
         onFlash={flash}
