@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react
 import { EditableBody } from "./components/EditableBody";
 import "./mixer.css";
 import { distinctTeamPieces } from "../lib/lineup";
+import { stripLeadingByline } from "../lib/byline";
 
 type Piece = {
   id: string;
@@ -369,17 +370,25 @@ export default function MixerPage() {
     );
   };
 
-  const bodyOrPending = (item: Piece, fieldMode: boolean) => (
-    <EditableBody
-      pieceId={item.id}
-      bodyHtml={item.bodyHtml}
-      optionBodies={item.optionBodies}
-      fieldMode={fieldMode}
-      canEdit={liveNotion}
-      onSaved={(next) => applyBodySave(item.id, next)}
-      onFlash={flash}
-    />
-  );
+  const bodyOrPending = (item: Piece, fieldMode: boolean) => {
+    const previewBody = (html: string) => item.section === "view"
+      ? stripLeadingByline(html, partnerByline(item, true))
+      : html;
+    return (
+      <EditableBody
+        pieceId={item.id}
+        bodyHtml={previewBody(item.bodyHtml)}
+        optionBodies={item.optionBodies.map((option) => ({
+          ...option,
+          bodyHtml: previewBody(option.bodyHtml),
+        }))}
+        fieldMode={fieldMode}
+        canEdit={liveNotion}
+        onSaved={(next) => applyBodySave(item.id, next)}
+        onFlash={flash}
+      />
+    );
+  };
 
   const placeholder = (label: string) => (
     <div className="placeholder">{label} is open. Pick a candidate to fill this slot.</div>
@@ -661,7 +670,7 @@ export default function MixerPage() {
                   {view ? (
                     <>
                       <h2>{view.title}</h2>
-                      <p className="byline">{partnerByline(view, true)},</p>
+                      <p className="byline">{partnerByline(view, true)}</p>
                       {bodyOrPending(view, false)}
                     </>
                   ) : (
