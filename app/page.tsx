@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EditableBody } from "./components/EditableBody";
+import { IssueDraftControls } from "./components/IssueDraftControls";
 import "./mixer.css";
 import { distinctTeamPieces } from "../lib/lineup";
 import { stripLeadingByline } from "../lib/byline";
@@ -28,6 +29,15 @@ type Piece = {
 
 type LineupState = PickerSelection;
 type DecisionFilter = "available" | "Keep" | "Banked" | "Ruled out";
+
+const EMPTY_ISSUE = {
+  id: "",
+  title: "Current issue",
+  url: "",
+  generationStatus: "",
+  hasGenerated: false,
+  generationAvailable: false,
+};
 
 type SectionKey = "view" | "team" | "field";
 
@@ -157,11 +167,13 @@ export default function MixerPage() {
   const [toast, setToast] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [liveNotion, setLiveNotion] = useState(false);
-  const [issueTitle, setIssueTitle] = useState("Current issue");
+  const [issue, setIssue] = useState(EMPTY_ISSUE);
+  const { title: issueTitle, generationStatus } = issue;
   const [draftLineup, setDraftLineup] = useState<LineupState | null>(null);
   const [draftRevision, setDraftRevision] = useState("");
   const [draftUnavailableReason, setDraftUnavailableReason] = useState("");
-  const [generationStatus, setGenerationStatus] = useState("");
+  const [queuePending, setQueuePending] = useState(false);
+  const [viewingPastDraft, setViewingPastDraft] = useState(false);
   const [lineupOrigin, setLineupOrigin] = useState<SavedPickerSelection["origin"]>("draft");
   const [issueSaving, setIssueSaving] = useState(false);
   const [issueSaveError, setIssueSaveError] = useState("");
@@ -180,6 +192,7 @@ export default function MixerPage() {
   const savedLineups = useRef<Record<string, SavedPickerSelection>>({});
   const legacyLineup = useRef<LineupState | null>(null);
   const issueSavePending = useRef(false);
+  const generationQueuePending = useRef(false);
   const onBodyEditingChange = useCallback((pieceId: string, editing: boolean) => {
     if (editing) {
       if (!editingPieceIds.current.has(pieceId)) localRevision.current += 1;
@@ -280,7 +293,7 @@ export default function MixerPage() {
 
   const refreshPieces = useCallback(async (reason: string) => {
     // Keep a pending response or an external decision from discarding an open editor.
-    if (editingPieceIds.current.size || pendingDecisionIds.current.size || issueSavePending.current) {
+    if (editingPieceIds.current.size || pendingDecisionIds.current.size || issueSavePending.current || generationQueuePending.current) {
       if (reason === "manual") flash(editingPieceIds.current.size
         ? "Save or cancel the open body edit before refreshing."
         : "Wait for the current save to finish.");
@@ -290,7 +303,7 @@ export default function MixerPage() {
     const revisionAtStart = localRevision.current;
     const canApply = () => requestSequence === refreshSequence.current
       && revisionAtStart === localRevision.current
-      && !editingPieceIds.current.size && !pendingDecisionIds.current.size && !issueSavePending.current;
+      && !editingPieceIds.current.size && !pendingDecisionIds.current.size && !issueSavePending.current && !generationQueuePending.current;
     try {
       // A completed write can invalidate a fetch even after its pending flag clears.
       const force = reason === "manual" || forceFreshAfterMutation.current;
@@ -326,8 +339,14 @@ export default function MixerPage() {
         setDraftLineup(recommended);
         setDraftRevision(typeof payload.issue?.draftRevision === "string" ? payload.issue.draftRevision : "");
         setDraftUnavailableReason(typeof payload.issue?.draftUnavailableReason === "string" ? payload.issue.draftUnavailableReason : "");
-        setGenerationStatus(typeof payload.issue?.generationStatus === "string" ? payload.issue.generationStatus : "");
-        setIssueTitle(payload.issue?.title || "Current issue");
+        setIssue({
+          id: issueId,
+          title: typeof payload.issue?.title === "string" ? payload.issue.title : EMPTY_ISSUE.title,
+          url: typeof payload.issue?.url === "string" ? payload.issue.url : "",
+          generationStatus: typeof payload.issue?.generationStatus === "string" ? payload.issue.generationStatus : "",
+          hasGenerated: payload.issue?.hasGenerated === true,
+          generationAvailable: payload.issue?.generationAvailable === true,
+        });
         setLiveNotion(payload.source === "notion-live");
         setSyncNote(
           `${source} · <strong>${next.length}</strong> Pieces · ${withBody} with draft body · checked ${when}` +
@@ -347,11 +366,11 @@ export default function MixerPage() {
     } catch {
       if (!canApply()) return;
       setCandidates([]);
+      currentIssueId.current = "";
       setLiveNotion(false);
-      setIssueTitle("Current issue");
+      setIssue(EMPTY_ISSUE);
       setDraftLineup(null);
       setDraftRevision("");
-      setGenerationStatus("");
       setSyncNote("Could not load the active issue. Check Signal Issues in Notion and refresh.");
       if (reason === "manual") flash("Refresh failed — try again.");
     }
@@ -370,14 +389,29 @@ export default function MixerPage() {
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
-    // Light polling as a safety net (not a cron job) — keeps Notion embed warm.
-    const poll = window.setInterval(() => void refreshPieces("poll"), 45_000);
     return () => {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVis);
-      window.clearInterval(poll);
     };
   }, [refreshPieces]);
+
+  const generationBusy = generationStatus === "Queued" || generationStatus === "Drafting";
+  useEffect(() => {
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshPieces("poll");
+    }, generationBusy ? 20_000 : 45_000);
+    return () => window.clearInterval(poll);
+  }, [generationBusy, refreshPieces]);
+
+  const onQueueChange = useCallback((pending: boolean, queued?: boolean) => {
+    generationQueuePending.current = pending;
+    setQueuePending(pending);
+    if (pending) localRevision.current += 1;
+    if (queued) {
+      setIssue((previous) => ({ ...previous, generationStatus: "Queued" }));
+      forceFreshAfterMutation.current = true;
+    }
+  }, []);
 
   if (!hydrated) {
     return (
@@ -396,7 +430,7 @@ export default function MixerPage() {
   const selectedIds = [state.view, state.field, ...state.team].filter((id): id is string => Boolean(id));
   const hasAlternateOption = selectedIds.some((id) => alternatePieceIds.has(id));
   const draftSaveBlockedReason = !liveNotion ? "Connect Notion to save the issue draft."
-    : ["Queued", "Drafting"].includes(generationStatus) ? "Bonnie is working on this issue. Wait for generation to finish before saving."
+    : queuePending || generationBusy ? "Bonnie is working on this issue. Wait for generation to finish before saving."
     : editingCount ? "Save or cancel open body edits first."
     : decisionSaving ? "Wait for editorial decisions to finish saving."
     : !isComplete ? "Choose one View, four different Team voices and one Field Note to save a draft."
@@ -489,7 +523,7 @@ export default function MixerPage() {
   };
 
   const saveIssueDraft = async () => {
-    if (issueSavePending.current || editingPieceIds.current.size || pendingDecisionIds.current.size || draftSaveBlockedReason) return;
+    if (issueSavePending.current || editingPieceIds.current.size || pendingDecisionIds.current.size || generationQueuePending.current || draftSaveBlockedReason) return;
     const issueId = currentIssueId.current;
     const selection = { view: state.view, team: [...state.team], field: state.field };
     issueSavePending.current = true;
@@ -624,7 +658,19 @@ export default function MixerPage() {
         ) }} />
       </header>
 
-      <section className="workspace" aria-label="Signal lineup mixer">
+      <IssueDraftControls
+        issueId={issue.id}
+        issueTitle={issueTitle}
+        issueUrl={issue.url}
+        generationStatus={generationStatus}
+        hasGenerated={issue.hasGenerated}
+        generationAvailable={issue.generationAvailable}
+        blocked={Boolean(editingCount || decisionSaving || issueSaving)}
+        onQueueChange={onQueueChange}
+        onViewPastDraft={setViewingPastDraft}
+      />
+
+      {!viewingPastDraft ? <section className="workspace" aria-label="Signal lineup mixer">
         <div className="panel">
           <div className="panel-head">
             <h2>Picker</h2>
@@ -1016,7 +1062,7 @@ export default function MixerPage() {
             </div>
           </article>
         </aside>
-      </section>
+      </section> : null}
     </main>
   );
 }

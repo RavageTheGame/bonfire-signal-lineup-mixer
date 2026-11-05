@@ -100,6 +100,97 @@ h1 {
   font-weight: 700;
 }
 
+.issue-tools {
+  margin-bottom: 18px;
+  border: 1px solid var(--rule-2);
+  border-radius: var(--radius);
+  background: rgba(255, 255, 255, .9);
+}
+
+.issue-toolbar,
+.issue-tools-actions,
+.editor-key-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.issue-toolbar {
+  justify-content: space-between;
+  gap: 12px 18px;
+  padding: 14px 16px;
+}
+
+.issue-toolbar h2 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(18px, 2.5vw, 23px);
+}
+
+.issue-tools-actions a { text-decoration: none; }
+.issue-generation-state,
+.issue-tools-message {
+  font-size: 12px;
+  line-height: 1.4;
+}
+.issue-generation-state { margin: 4px 0 0; color: var(--body-2); }
+.issue-tools-message { margin: 0; padding: 0 16px 12px; }
+
+.editor-key-form {
+  border-top: 1px solid var(--rule);
+  padding: 12px 16px;
+  font-size: 13px;
+}
+
+.editor-key-form label { font-weight: 700; }
+.editor-key-form input {
+  width: min(100%, 190px);
+  min-width: 0;
+  border: 1px solid var(--rule-2);
+  border-radius: 6px;
+  padding: 7px 8px;
+  color: var(--navy);
+  font: inherit;
+}
+
+.past-issues {
+  border-top: 1px solid var(--rule);
+  padding: 12px 16px;
+}
+.past-issues h3, .past-issues p { margin: 0; font-size: 13px; }
+.past-issues ul {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  max-height: 260px;
+  overflow: auto;
+}
+.past-issue {
+  width: 100%;
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 4px 10px;
+  padding: 10px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  font-size: 13px;
+  color: var(--navy);
+  cursor: pointer;
+}
+.past-issue span { color: var(--body-2); }
+.past-issue:hover, .past-issue[aria-pressed="true"] { background: var(--panel); }
+.past-issue:disabled { cursor: wait; }
+.past-issue:focus-visible, .editor-key-form input:focus-visible { outline: 2px solid var(--ember); outline-offset: -2px; }
+.past-draft { max-width: var(--email-width); margin: 6px auto 16px; }
+.past-draft-email .email-pad { overflow-wrap: anywhere; }
+.past-draft-email img { max-width: 100%; height: auto; }
+.past-draft .empty-data { margin: 16px; }
+
 .workspace {
   display: grid;
   grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);

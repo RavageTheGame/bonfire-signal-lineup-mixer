@@ -49,7 +49,7 @@ function richTextToHtml(items: RichText[] | undefined): string {
       if (a.italic) text = `<em>${text}</em>`;
       if (a.underline) text = `<u>${text}</u>`;
       if (a.strikethrough) text = `<s>${text}</s>`;
-      if (item.href) text = `<a href="${escapeHtml(item.href)}">${text}</a>`;
+      if (item.href && /^(https?:\/\/|mailto:|tel:)/i.test(item.href)) text = `<a href="${escapeHtml(item.href)}">${text}</a>`;
       return text;
     })
     .join("");
@@ -124,6 +124,19 @@ function renderLeaf(block: NotionBlock): string | null {
       if (isHeading(type)) return null;
       return inner.trim() ? `<p>${inner}</p>` : null;
   }
+}
+
+/** Render the saved issue copy without running Piece title or metadata heuristics. */
+export function renderSavedDraftHtml(blocks: NotionBlock[]): string {
+  return blocks.map((block) => {
+    const heading = /^heading_([1-3])$/.exec(block.type);
+    if (heading) {
+      const tag = `h${heading[1]}`;
+      return `<${tag}>${richTextToHtml(blockData(block).rich_text)}</${tag}>`;
+    }
+    if (block.type === "divider") return "<hr>";
+    return renderLeaf(block) ?? "";
+  }).filter(Boolean).join("\n");
 }
 
 function preferDefaultOption(options: OptionBody[]): OptionBody | null {
