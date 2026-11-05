@@ -381,3 +381,36 @@ test("an in-process overlapping save is rejected before it can write a second dr
   release(); await saving;
   assert.equal(f.writes.filter((request) => request.page_id).length, 1);
 });
+
+test("past drafts read the saved newsletter exactly and exclude unrelated notes", async () => {
+  const { loadPastIssue } = await import("../lib/issue-history.ts");
+  const f = fixture();
+  const page = await f.client.pages.retrieve({ page_id: issueId });
+  page.properties["Active issue"].checkbox = false;
+  f.client.pages.retrieve = async () => page;
+  f.trees.get(issueId).splice(2, 0,
+    block("section", "heading_2", "The Bonfire View"),
+    { ...block("linked", "paragraph", "<example>"), paragraph: {
+      rich_text: [{ plain_text: "<example>", href: "javascript:alert(1)" }],
+    } });
+  const result = await loadPastIssue(f.client, issueId, issuesDatabaseId);
+  assert.equal(result.issue.active, false);
+  assert.equal(result.savedDraftHtml,
+    "<h2>The Bonfire View</h2>\n<p>&lt;example&gt;</p>\n<p>Previous draft one.</p>\n<p>Previous draft two.</p>");
+  assert.deepEqual(result.pieces, []);
+  assert.deepEqual(f.writes, []);
+});
+
+test("draft history lists only retained past Issues and rejects an unrelated page ID", async () => {
+  const { listPastIssues, loadPastIssue } = await import("../lib/issue-history.ts");
+  const f = fixture();
+  const active = await f.client.pages.retrieve({ page_id: issueId });
+  const past = structuredClone(active);
+  past.properties["Active issue"].checkbox = false;
+  const trashed = { ...past, in_trash: true };
+  const other = { ...past, parent: { type: "database_id", database_id: piecesDatabaseId } };
+  f.client.databases.query = async () => ({ results: [active, past, trashed, other], has_more: false });
+  assert.deepEqual((await listPastIssues(f.client, issuesDatabaseId)).map((issue) => issue.id), [past.id]);
+  f.client.pages.retrieve = async () => other;
+  await assert.rejects(loadPastIssue(f.client, issueId, issuesDatabaseId), { status: 404 });
+});

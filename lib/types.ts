@@ -29,6 +29,17 @@ export type Piece = {
   lastEditedTime?: string;
 };
 
+export type IssueHistoryEntry = {
+  id: string;
+  name: string;
+  url: string;
+  status: string;
+  targetSend: string | null;
+  sourceStart: string | null;
+  sourceEnd: string | null;
+  archived: boolean;
+};
+
 export type PiecesPayload = {
   syncedAt: string;
   /** Wall-clock of this response (set even when serving a snapshot). */
@@ -43,6 +54,15 @@ export type PiecesPayload = {
     draftRevision?: string;
     generationStatus?: string;
     draftUnavailableReason?: string;
+    active?: boolean;
+    hasGenerated?: boolean;
+    generationAvailable?: boolean;
+    scopedGenerationAvailable?: boolean;
+    status?: string;
+    targetSend?: string | null;
+    sourceStart?: string | null;
+    sourceEnd?: string | null;
   } | null;
   staleSeconds?: number;
+  savedDraftHtml?: string;
 };

@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { EditableBody } from "./components/EditableBody";
+import { IssueDraftControls } from "./components/IssueDraftControls";
+import { useScopedGenerationControls } from "./components/ScopedGenerationControls";
 import "./mixer.css";
 import { distinctTeamPieces } from "../lib/lineup";
 import { stripLeadingByline } from "../lib/byline";
@@ -29,7 +31,48 @@ type Piece = {
 type LineupState = PickerSelection;
 type DecisionFilter = "available" | "Keep" | "Banked" | "Ruled out";
 
+const EMPTY_ISSUE = {
+  id: "",
+  title: "Current issue",
+  url: "",
+  generationStatus: "",
+  hasGenerated: false,
+  generationAvailable: false,
+  scopedGenerationAvailable: false,
+};
+
 type SectionKey = "view" | "team" | "field";
+
+type ScrollAnchor = { key: string; top: number };
+type ScrollLock = {
+  windowY: number;
+  controlsY: number;
+  previewAnchors: ScrollAnchor[];
+  controlsAnchors: ScrollAnchor[];
+};
+
+const REFRESH_ANCHOR = "[data-refresh-anchor]";
+
+function captureAnchors(root: HTMLElement | null, readingLine: number): ScrollAnchor[] {
+  if (!root) return [];
+  return Array.from(root.querySelectorAll<HTMLElement>(REFRESH_ANCHOR))
+    .flatMap((element) => {
+      const { top, bottom } = element.getBoundingClientRect();
+      const key = element.dataset.refreshAnchor;
+      return key && top <= readingLine && bottom > readingLine ? [{ key, top }] : [];
+    })
+    .reverse(); // Prefer a Piece over its containing section.
+}
+
+function anchorShift(root: HTMLElement | null, anchors: ScrollAnchor[]): number | null {
+  if (!root || !anchors.length) return null;
+  const elements = Array.from(root.querySelectorAll<HTMLElement>(REFRESH_ANCHOR));
+  for (const anchor of anchors) {
+    const element = elements.find((item) => item.dataset.refreshAnchor === anchor.key);
+    if (element) return element.getBoundingClientRect().top - anchor.top;
+  }
+  return null;
+}
 
 const LEGACY_STORAGE_KEY = "bonfireSignalLiveLineup.v1";
 const STORAGE_KEY = "bonfireSignalLiveLineup.v2";
@@ -155,13 +198,17 @@ export default function MixerPage() {
   const [openSections, setOpenSections] = useState<Record<SectionKey, boolean>>(DEFAULT_OPEN);
   const [syncNote, setSyncNote] = useState("Loading Pieces from Notion…");
   const [toast, setToast] = useState("");
+  const [refreshPending, setRefreshPending] = useState(false);
+  const [refreshMessage, setRefreshMessage] = useState("");
   const [hydrated, setHydrated] = useState(false);
   const [liveNotion, setLiveNotion] = useState(false);
-  const [issueTitle, setIssueTitle] = useState("Current issue");
+  const [issue, setIssue] = useState(EMPTY_ISSUE);
+  const { title: issueTitle, generationStatus } = issue;
   const [draftLineup, setDraftLineup] = useState<LineupState | null>(null);
   const [draftRevision, setDraftRevision] = useState("");
   const [draftUnavailableReason, setDraftUnavailableReason] = useState("");
-  const [generationStatus, setGenerationStatus] = useState("");
+  const [queuePending, setQueuePending] = useState(false);
+  const [viewingPastDraft, setViewingPastDraft] = useState(false);
   const [lineupOrigin, setLineupOrigin] = useState<SavedPickerSelection["origin"]>("draft");
   const [issueSaving, setIssueSaving] = useState(false);
   const [issueSaveError, setIssueSaveError] = useState("");
@@ -169,7 +216,9 @@ export default function MixerPage() {
   const [alternatePieceIds, setAlternatePieceIds] = useState(new Set<string>());
   const [draftLoadKey, setDraftLoadKey] = useState(0);
   const controlsRef = useRef<HTMLDivElement | null>(null);
-  const scrollLockRef = useRef<{ windowY: number; controlsY: number } | null>(null);
+  const previewRef = useRef<HTMLElement | null>(null);
+  const scrollLockRef = useRef<ScrollLock | null>(null);
+  const manualRefreshPending = useRef(false);
   const editingPieceIds = useRef(new Set<string>());
   const pendingDecisionIds = useRef(new Set<string>());
   const localRevision = useRef(0);
@@ -180,6 +229,8 @@ export default function MixerPage() {
   const savedLineups = useRef<Record<string, SavedPickerSelection>>({});
   const legacyLineup = useRef<LineupState | null>(null);
   const issueSavePending = useRef(false);
+  const generationQueuePending = useRef(false);
+  const editorKey = useRef("");
   const onBodyEditingChange = useCallback((pieceId: string, editing: boolean) => {
     if (editing) {
       if (!editingPieceIds.current.has(pieceId)) localRevision.current += 1;
@@ -230,12 +281,17 @@ export default function MixerPage() {
     (flash as any).timer = window.setTimeout(() => setToast(""), 2600);
   };
 
-  // Capture scroll before a state update that may grow/shrink the preview,
-  // then restore in useLayoutEffect so the page doesn't jump.
-  const preserveScroll = (update: () => void) => {
+  // A refresh can reflow content above the reading position or reorder the picker.
+  const preserveScroll = (update: () => void, trackContent = false) => {
+    const controls = controlsRef.current;
+    const controlsTop = controls?.getBoundingClientRect().top ?? 0;
     scrollLockRef.current = {
       windowY: window.scrollY,
-      controlsY: controlsRef.current?.scrollTop ?? 0,
+      controlsY: controls?.scrollTop ?? 0,
+      previewAnchors: trackContent ? captureAnchors(previewRef.current, Math.min(120, window.innerHeight / 5)) : [],
+      controlsAnchors: trackContent && controls
+        ? captureAnchors(controls, controlsTop + Math.min(32, controls.clientHeight / 2))
+        : [],
     };
     update();
   };
@@ -244,9 +300,18 @@ export default function MixerPage() {
     const lock = scrollLockRef.current;
     if (!lock) return;
     scrollLockRef.current = null;
-    window.scrollTo({ top: lock.windowY, left: 0, behavior: "auto" });
-    if (controlsRef.current) controlsRef.current.scrollTop = lock.controlsY;
+    const previewShift = anchorShift(previewRef.current, lock.previewAnchors);
+    const controls = controlsRef.current;
+    const controlsShift = anchorShift(controls, lock.controlsAnchors);
+    window.scrollTo({ top: previewShift === null ? lock.windowY : window.scrollY + previewShift, behavior: "instant" });
+    if (controls) controls.scrollTop = controlsShift === null ? lock.controlsY : controls.scrollTop + controlsShift;
   });
+
+  useEffect(() => {
+    if (!refreshMessage) return;
+    const timer = window.setTimeout(() => setRefreshMessage(""), 4000);
+    return () => window.clearTimeout(timer);
+  }, [refreshMessage]);
 
   const persist = (next: LineupState, origin: SavedPickerSelection["origin"] = "custom") => {
     if (issueSavePending.current) {
@@ -280,17 +345,24 @@ export default function MixerPage() {
 
   const refreshPieces = useCallback(async (reason: string) => {
     // Keep a pending response or an external decision from discarding an open editor.
-    if (editingPieceIds.current.size || pendingDecisionIds.current.size || issueSavePending.current) {
-      if (reason === "manual") flash(editingPieceIds.current.size
+    if (manualRefreshPending.current) return;
+    const manual = reason === "manual";
+    if (editingPieceIds.current.size || pendingDecisionIds.current.size || issueSavePending.current || generationQueuePending.current) {
+      if (manual) setRefreshMessage(editingPieceIds.current.size
         ? "Save or cancel the open body edit before refreshing."
-        : "Wait for the current save to finish.");
+        : "Wait for the current change to finish.");
       return;
+    }
+    if (manual) {
+      manualRefreshPending.current = true;
+      setRefreshPending(true);
+      setRefreshMessage("");
     }
     const requestSequence = ++refreshSequence.current;
     const revisionAtStart = localRevision.current;
     const canApply = () => requestSequence === refreshSequence.current
       && revisionAtStart === localRevision.current
-      && !editingPieceIds.current.size && !pendingDecisionIds.current.size && !issueSavePending.current;
+      && !editingPieceIds.current.size && !pendingDecisionIds.current.size && !issueSavePending.current && !generationQueuePending.current;
     try {
       // A completed write can invalidate a fetch even after its pending flag clears.
       const force = reason === "manual" || forceFreshAfterMutation.current;
@@ -300,7 +372,10 @@ export default function MixerPage() {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const payload = await res.json();
       const next = normalizePieces(payload);
-      if (!canApply()) return;
+      if (!canApply()) {
+        if (manual) setRefreshMessage("Refresh again after the current change finishes.");
+        return;
+      }
       const issueId = typeof payload.issue?.id === "string" ? payload.issue.id : "";
       if (!issueId) throw new Error("No active issue in response");
       const recommended = readPickerSelection(payload.issue?.draftLineup);
@@ -320,14 +395,22 @@ export default function MixerPage() {
             ? " · refreshed on focus"
             : "";
 
+      const sameIssue = currentIssueId.current === issueId;
       preserveScroll(() => {
         setCandidates(next);
         currentIssueId.current = issueId;
         setDraftLineup(recommended);
         setDraftRevision(typeof payload.issue?.draftRevision === "string" ? payload.issue.draftRevision : "");
         setDraftUnavailableReason(typeof payload.issue?.draftUnavailableReason === "string" ? payload.issue.draftUnavailableReason : "");
-        setGenerationStatus(typeof payload.issue?.generationStatus === "string" ? payload.issue.generationStatus : "");
-        setIssueTitle(payload.issue?.title || "Current issue");
+        setIssue({
+          id: issueId,
+          title: typeof payload.issue?.title === "string" ? payload.issue.title : EMPTY_ISSUE.title,
+          url: typeof payload.issue?.url === "string" ? payload.issue.url : "",
+          generationStatus: typeof payload.issue?.generationStatus === "string" ? payload.issue.generationStatus : "",
+          hasGenerated: payload.issue?.hasGenerated === true,
+          generationAvailable: payload.issue?.generationAvailable === true,
+          scopedGenerationAvailable: payload.issue?.scopedGenerationAvailable === true,
+        });
         setLiveNotion(payload.source === "notion-live");
         setSyncNote(
           `${source} · <strong>${next.length}</strong> Pieces · ${withBody} with draft body · checked ${when}` +
@@ -335,25 +418,24 @@ export default function MixerPage() {
             ". Swaps stay in this browser until you save the draft to Notion.",
         );
         applyLineup(choice.selection, choice.origin, issueId);
-      });
+      }, sameIssue);
 
-      if (reason === "manual") {
-        flash(
-          payload.source === "notion-live"
-            ? `Refreshed from Notion · ${next.length} pieces`
-            : `Refreshed snapshot · ${next.length} pieces`,
-        );
-      }
+      if (manual) setRefreshMessage(payload.source === "notion-live" ? "Refreshed from Notion." : "Refreshed saved snapshot.");
     } catch {
       if (!canApply()) return;
-      setCandidates([]);
-      setLiveNotion(false);
-      setIssueTitle("Current issue");
-      setDraftLineup(null);
-      setDraftRevision("");
-      setGenerationStatus("");
-      setSyncNote("Could not load the active issue. Check Signal Issues in Notion and refresh.");
-      if (reason === "manual") flash("Refresh failed — try again.");
+      const hadIssue = Boolean(currentIssueId.current);
+      preserveScroll(() => {
+        setLiveNotion(false);
+        setSyncNote(hadIssue
+          ? "Could not refresh from Notion. Showing the last loaded issue."
+          : "Could not load the active issue. Check Signal Issues in Notion and refresh.");
+      }, hadIssue);
+      if (manual) setRefreshMessage("Could not refresh from Notion. Try again.");
+    } finally {
+      if (manual) {
+        manualRefreshPending.current = false;
+        setRefreshPending(false);
+      }
     }
   }, []);
 
@@ -370,14 +452,39 @@ export default function MixerPage() {
     };
     window.addEventListener("focus", onFocus);
     document.addEventListener("visibilitychange", onVis);
-    // Light polling as a safety net (not a cron job) — keeps Notion embed warm.
-    const poll = window.setInterval(() => void refreshPieces("poll"), 45_000);
     return () => {
       window.removeEventListener("focus", onFocus);
       document.removeEventListener("visibilitychange", onVis);
-      window.clearInterval(poll);
     };
   }, [refreshPieces]);
+
+  const generationBusy = generationStatus === "Queued" || generationStatus === "Drafting";
+  useEffect(() => {
+    const poll = window.setInterval(() => {
+      if (document.visibilityState === "visible") void refreshPieces("poll");
+    }, generationBusy ? 20_000 : 45_000);
+    return () => window.clearInterval(poll);
+  }, [generationBusy, refreshPieces]);
+
+  const onQueueChange = useCallback((pending: boolean, queued?: boolean) => {
+    generationQueuePending.current = pending;
+    setQueuePending(pending);
+    if (pending) localRevision.current += 1;
+    if (queued) {
+      setIssue((previous) => ({ ...previous, generationStatus: "Queued" }));
+      forceFreshAfterMutation.current = true;
+    }
+  }, []);
+
+  const canQueueScopedGeneration = liveNotion && issue.scopedGenerationAvailable;
+  const scopedGenerationBlocked = Boolean(editingCount || pendingDecisionIds.current.size || issueSaving || queuePending || generationBusy);
+  const scopedGeneration = useScopedGenerationControls({
+    issueId: issue.id,
+    available: canQueueScopedGeneration,
+    blocked: scopedGenerationBlocked,
+    editorKey,
+    onQueueChange,
+  });
 
   if (!hydrated) {
     return (
@@ -396,7 +503,7 @@ export default function MixerPage() {
   const selectedIds = [state.view, state.field, ...state.team].filter((id): id is string => Boolean(id));
   const hasAlternateOption = selectedIds.some((id) => alternatePieceIds.has(id));
   const draftSaveBlockedReason = !liveNotion ? "Connect Notion to save the issue draft."
-    : ["Queued", "Drafting"].includes(generationStatus) ? "Bonnie is working on this issue. Wait for generation to finish before saving."
+    : queuePending || generationBusy ? "Bonnie is working on this issue. Wait for generation to finish before saving."
     : editingCount ? "Save or cancel open body edits first."
     : decisionSaving ? "Wait for editorial decisions to finish saving."
     : !isComplete ? "Choose one View, four different Team voices and one Field Note to save a draft."
@@ -489,7 +596,7 @@ export default function MixerPage() {
   };
 
   const saveIssueDraft = async () => {
-    if (issueSavePending.current || editingPieceIds.current.size || pendingDecisionIds.current.size || draftSaveBlockedReason) return;
+    if (issueSavePending.current || editingPieceIds.current.size || pendingDecisionIds.current.size || generationQueuePending.current || draftSaveBlockedReason) return;
     const issueId = currentIssueId.current;
     const selection = { view: state.view, team: [...state.team], field: state.field };
     issueSavePending.current = true;
@@ -601,6 +708,24 @@ export default function MixerPage() {
 
   return (
     <main className="app">
+      {!viewingPastDraft ? (
+        <div className="refresh-dock">
+          <button
+            type="button"
+            className="action refresh-button"
+            aria-label="Refresh from Notion"
+            aria-disabled={refreshPending}
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => void refreshPieces("manual")}
+          >
+            <svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M20 11a8 8 0 1 0-2 6M20 4v7h-7" />
+            </svg>
+            {refreshPending ? "Refreshing…" : "Refresh"}
+          </button>
+          <div className={refreshMessage ? "refresh-message" : ""} role="status">{refreshMessage}</div>
+        </div>
+      ) : null}
       <header className="topbar">
         <div>
           <p className="eyebrow">Bonfire Signal</p>
@@ -624,7 +749,21 @@ export default function MixerPage() {
         ) }} />
       </header>
 
-      <section className="workspace" aria-label="Signal lineup mixer">
+      <IssueDraftControls
+        issueId={issue.id}
+        editorKey={editorKey}
+        issueTitle={issueTitle}
+        issueUrl={issue.url}
+        generationStatus={generationStatus}
+        hasGenerated={issue.hasGenerated}
+        generationAvailable={liveNotion && issue.generationAvailable}
+        blocked={Boolean(editingCount || decisionSaving || issueSaving || queuePending)}
+        onQueueChange={onQueueChange}
+        onViewPastDraft={setViewingPastDraft}
+      />
+      {scopedGeneration.dialog}
+
+      {!viewingPastDraft ? <section className="workspace" aria-label="Signal lineup mixer">
         <div className="panel">
           <div className="panel-head">
             <h2>Picker</h2>
@@ -645,14 +784,6 @@ export default function MixerPage() {
                 {filter === "all" ? "All statuses" : filter}
               </button>
             ))}
-            <button
-              type="button"
-              className="chip"
-              onMouseDown={(e) => e.preventDefault()}
-              onClick={() => void refreshPieces("manual")}
-            >
-              Refresh now
-            </button>
           </div>
           <div className="decision-filter">
             <label htmlFor="editorial-filter">Show</label>
@@ -674,20 +805,27 @@ export default function MixerPage() {
                 const options = bySection(section.key);
                 const isOpen = openSections[section.key];
                 return (
-                  <div className={`section-card ${isOpen ? "is-open" : ""}`} key={section.key}>
-                    <button
-                      type="button"
-                      className="section-title"
-                      aria-expanded={isOpen}
-                      onMouseDown={(e) => e.preventDefault()}
-                      onClick={() => toggleSection(section.key)}
-                    >
-                      <h3>{section.title}</h3>
-                      <span className="hint">{section.hint}</span>
-                      <span className="section-chevron" aria-hidden="true">
-                        ›
-                      </span>
-                    </button>
+                  <div className={`section-card ${isOpen ? "is-open" : ""}`} data-section={section.key} data-refresh-anchor={section.key} key={section.key}>
+                    <div className="section-header">
+                      <button
+                        type="button"
+                        className="section-title"
+                        aria-expanded={isOpen}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => toggleSection(section.key)}
+                      >
+                        <h3>{section.title}</h3>
+                        <span className="hint">{section.hint}</span>
+                        <span className="section-chevron" aria-hidden="true">
+                          ›
+                        </span>
+                      </button>
+                      {canQueueScopedGeneration ? (
+                        <button type="button" className="decision-action section-generate" disabled={scopedGenerationBlocked}
+                          aria-label={`Regenerate options for ${section.title}`}
+                          onClick={() => scopedGeneration.regenerateSection(section.key)}>Regenerate</button>
+                      ) : null}
+                    </div>
                     {!isOpen ? (
                       <p className="section-summary">
                         <strong>{sectionSummary(section.key)}</strong>
@@ -706,7 +844,7 @@ export default function MixerPage() {
                               && !team.some((selected) => selected.partner === item.partner));
                             const id = `pick-${item.id}`;
                             return (
-                              <div className="option-row" key={item.id}>
+                              <div className="option-row" data-refresh-anchor={item.id} key={item.id}>
                               <label
                                 className={`option ${disabled ? "is-disabled" : ""} ${checked ? "is-on" : ""}`}
                                 data-kind={section.type}
@@ -773,6 +911,11 @@ export default function MixerPage() {
                                       disabled={!liveNotion || decisionWrites[item.id] || issueSaving} onClick={() => void saveDecision(item, "")}>Restore</button>
                                   </>
                                 )}
+                                {canQueueScopedGeneration ? (
+                                  <button type="button" className="decision-action" disabled={scopedGenerationBlocked}
+                                    aria-label={`Move and rewrite ${item.title}`}
+                                    onClick={() => scopedGeneration.movePiece(item)}>Move</button>
+                                ) : null}
                                 {decisionWrites[item.id] ? <span className="decision-saving" role="status">Saving…</span> : null}
                               </div>
                               {decisionErrors[item.id] ? <p className="decision-error" role="alert">{decisionErrors[item.id]}</p> : null}
@@ -884,7 +1027,7 @@ export default function MixerPage() {
           </div>
         </div>
 
-        <aside className="preview-shell">
+        <aside className="preview-shell" ref={previewRef}>
           <div className="preview-label">
             <span>Signal email preview</span>
             <span style={{ color: isComplete ? "var(--good)" : "var(--warn)", fontWeight: 700 }}>
@@ -918,7 +1061,7 @@ export default function MixerPage() {
                   seeing and the questions we think are worth asking next.
                 </p>
 
-                <section className="email-section">
+                <section className="email-section" data-refresh-anchor="view">
                   <div className="sec-head">
                     <span className="sec-num">01</span>
                     <p className="sec-label">
@@ -928,17 +1071,17 @@ export default function MixerPage() {
                     <div className="sec-line" />
                   </div>
                   {view ? (
-                    <>
+                    <div data-refresh-anchor={view.id}>
                       <h2>{view.title}</h2>
                       <p className="byline">{partnerByline(view, true)}</p>
                       {bodyOrPending(view, false)}
-                    </>
+                    </div>
                   ) : (
                     placeholder("The Bonfire View")
                   )}
                 </section>
 
-                <section className="email-section">
+                <section className="email-section" data-refresh-anchor="team">
                   <div className="sec-head">
                     <span className="sec-num">02</span>
                     <p className="sec-label">FROM THE BONFIRE TEAM</p>
@@ -947,7 +1090,7 @@ export default function MixerPage() {
                   </div>
                   <div className="team-list">
                     {team.map((item) => (
-                      <div className="team-item" key={item.id}>
+                      <div className="team-item" data-refresh-anchor={item.id} key={item.id}>
                         <p className="team-name">
                           {(partnerDisplayName(item) || item.partner || "").toUpperCase()}
                         </p>
@@ -961,7 +1104,7 @@ export default function MixerPage() {
                   </div>
                 </section>
 
-                <section className="email-section">
+                <section className="email-section" data-refresh-anchor="field">
                   <div className="sec-head">
                     <span className="sec-num">03</span>
                     <p className="sec-label">FIELD NOTES FROM THE PORTFOLIO</p>
@@ -969,13 +1112,13 @@ export default function MixerPage() {
                     <div className="sec-line" />
                   </div>
                   {field ? (
-                    <>
+                    <div data-refresh-anchor={field.id}>
                       <h2 className="field">{field.title}</h2>
                       {field.partner !== "Anonymous" ? (
                         <p className="byline">{partnerByline(field, false)},</p>
                       ) : null}
                       {bodyOrPending(field, true)}
-                    </>
+                    </div>
                   ) : (
                     placeholder("Field Note")
                   )}
@@ -1016,7 +1159,7 @@ export default function MixerPage() {
             </div>
           </article>
         </aside>
-      </section>
+      </section> : null}
     </main>
   );
 }

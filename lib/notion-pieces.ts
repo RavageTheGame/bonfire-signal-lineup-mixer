@@ -8,6 +8,9 @@ import { readPullQuoteProperty } from "./pull-quote";
 import { isAvailableCandidate, normalizeEditorialDecision } from "./editorial-decision";
 import { readDraftLineupProperty, resolveDraftLineup } from "./draft-lineup";
 import { readIssueDraftSnapshot } from "./issue-draft-writeback";
+import { editorAccessConfigured } from "./editor-access";
+import { issueHasGenerated } from "./issue-generation";
+import { GENERATION_REQUEST_PROPERTY } from "./generation-request";
 
 export const SIGNAL_PIECES_DB =
   process.env.NOTION_PIECES_DATABASE_ID ||
@@ -144,6 +147,10 @@ async function loadActiveIssue(notion: Client) {
     url: (page.url || `https://www.notion.so/${page.id.replace(/-/g, "")}`) as string,
     draftLineupDefinition: readDraftLineupProperty(props, "Draft lineup"),
     generationStatus: propSelect(props, "Generation status"),
+    active: true,
+    hasGenerated: issueHasGenerated(props),
+    generationAvailable: editorAccessConfigured(),
+    scopedGenerationAvailable: editorAccessConfigured() && props[GENERATION_REQUEST_PROPERTY]?.type === "rich_text",
     draftRevision,
     draftUnavailableReason,
   };
