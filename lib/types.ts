@@ -57,6 +57,7 @@ export type PiecesPayload = {
     active?: boolean;
     hasGenerated?: boolean;
     generationAvailable?: boolean;
+    scopedGenerationAvailable?: boolean;
     status?: string;
     targetSend?: string | null;
     sourceStart?: string | null;

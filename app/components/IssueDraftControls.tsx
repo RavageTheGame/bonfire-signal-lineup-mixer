@@ -1,12 +1,14 @@
 "use client";
 
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent, type RefObject } from "react";
 import type { IssueHistoryEntry } from "../../lib/types";
+import { EditorRequestError, editorRequest } from "../../lib/editor-request";
 
 type EditorAction = { type: "generate" } | { type: "history" } | { type: "open"; issue: IssueHistoryEntry };
 
 type Props = {
   issueId: string;
+  editorKey: RefObject<string>;
   issueTitle: string;
   issueUrl: string;
   generationStatus: string;
@@ -16,28 +18,6 @@ type Props = {
   onQueueChange: (pending: boolean, queued?: boolean) => void;
   onViewPastDraft: (viewing: boolean) => void;
 };
-
-class EditorRequestError extends Error {
-  constructor(message: string, readonly status: number) {
-    super(message);
-  }
-}
-
-async function editorRequest(path: string, key: string, failure: string, body?: object) {
-  const response = await fetch(path, {
-    cache: "no-store",
-    method: body ? "POST" : "GET",
-    headers: { "X-Signal-Editor-Key": key, ...(body ? { "Content-Type": "application/json" } : {}) },
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const message = response.status === 401 ? "Enter a valid Signal editor key to continue."
-      : typeof payload.error === "string" ? payload.error : failure;
-    throw new EditorRequestError(message, response.status);
-  }
-  return payload;
-}
 
 const GENERATION_LABELS: Record<string, string> = {
   Queued: "Queued for Bonnie",
@@ -55,9 +35,8 @@ function dateLabel(value: IssueHistoryEntry["targetSend"]) {
   }).format(date);
 }
 
-export function IssueDraftControls({ issueId, issueTitle, issueUrl, generationStatus, hasGenerated,
+export function IssueDraftControls({ issueId, editorKey, issueTitle, issueUrl, generationStatus, hasGenerated,
   generationAvailable, blocked, onQueueChange, onViewPastDraft }: Props) {
-  const editorKey = useRef("");
   const requestPending = useRef(false);
   const pastDraftRef = useRef<HTMLElement>(null);
   const [request, setRequest] = useState<EditorAction["type"] | null>(null);

@@ -16,6 +16,8 @@ const { issueHasGenerated, parseIssueGenerationPayload, queueIssueGeneration } =
 const issueId = "11111111-1111-4111-8111-111111111111";
 const issuesDatabaseId = "22222222-2222-4222-8222-222222222222";
 const otherId = "33333333-3333-4333-8333-333333333333";
+const piecesDatabaseId = "44444444-4444-4444-8444-444444444444";
+const pieceId = "55555555-5555-4555-8555-555555555555";
 const select = (name) => ({ type: "select", select: name ? { name } : null });
 const date = (start) => ({ type: "date", date: start ? { start } : null });
 const lineup = (value) => ({ type: "rich_text", rich_text: value ? [{ plain_text: value }] : [] });
@@ -28,6 +30,14 @@ function fixture() {
       "Generation status": select("Idle"), Status: select("Draft"),
       "Source start": date("2026-09-25"), "Source end": date("2026-10-30"),
       "Generated at": date(null), "Draft lineup": lineup(null),
+    },
+  };
+  const piece = {
+    id: pieceId, parent: { type: "database_id", database_id: piecesDatabaseId }, archived: false, in_trash: false,
+    last_edited_time: "2026-11-05T09:00:00.000Z",
+    properties: {
+      Type: select("Big Idea"), Status: select("Draft"), "Editorial decision": select(null),
+      "Related Issue": { type: "relation", relation: [{ id: issueId }] },
     },
   };
   const issues = [{ id: issueId }];
@@ -43,13 +53,14 @@ function fixture() {
     } },
     pages: {
       retrieve: async ({ page_id }) => {
+        if (page_id === pieceId) return piece;
         assert.equal(page_id.replaceAll("-", ""), issueId.replaceAll("-", ""));
         return issue;
       },
       update: async (request) => { writes.push(request); return issue; },
     },
   };
-  return { client, issue, issues, writes, schema };
+  return { client, issue, issues, piece, writes, schema };
 }
 
 test("editor-only actions fail closed unless configured and presented with the exact key", () => {
@@ -73,10 +84,14 @@ test("editor-only actions fail closed unless configured and presented with the e
   }
 });
 
-test("only a generation mode is accepted in a request", () => {
-  assert.equal(parseIssueGenerationPayload({ mode: "initial" }), "initial");
-  assert.equal(parseIssueGenerationPayload({ mode: "additive" }), "additive");
-  for (const payload of [null, {}, [], { mode: "rebuild" }, { mode: "additive", force: true }]) {
+test("generation accepts only the requested mode, supported destination and source identifier", () => {
+  for (const request of [{ mode: "initial" }, { mode: "additive" }, { mode: "section", section: "Field Notes" },
+    { mode: "move", pieceId, section: "Team take" }]) {
+    assert.deepEqual(parseIssueGenerationPayload(request), request);
+  }
+  for (const payload of [null, {}, [], { mode: "rebuild" }, { mode: "additive", force: true },
+    { mode: "section", section: "toString" }, { mode: "section", section: "Big Idea", requestId: otherId },
+    { mode: "move", section: "Team take", pieceId: "invalid" }]) {
     assert.throws(() => parseIssueGenerationPayload(payload), { status: 400 });
   }
 });
@@ -90,7 +105,7 @@ test("both generation paths change only the trigger property and preserve draft 
     }
     const before = structuredClone(f.issue);
     assert.equal(issueHasGenerated(f.issue.properties), mode === "additive");
-    assert.equal(await queueIssueGeneration(f.client, issueId, mode, issuesDatabaseId), "Queued");
+    assert.equal(await queueIssueGeneration(f.client, issueId, { mode }, issuesDatabaseId), "Queued");
     assert.deepEqual(f.writes, [{ page_id: issueId, properties: { "Generation status": { select: { id: "queued-option" } } } }]);
     assert.deepEqual(f.issue, before);
   }
@@ -122,15 +137,81 @@ test("queue refuses inactive, invalid-window, already running, finalized and sta
   for (const [change, status] of cases) {
     const f = fixture();
     change(f);
-    await assert.rejects(queueIssueGeneration(f.client, issueId, "initial", issuesDatabaseId), { status });
+    await assert.rejects(queueIssueGeneration(f.client, issueId, { mode: "initial" }, issuesDatabaseId), { status });
     assert.equal(f.writes.length, 0);
   }
 });
 
 test("overlapping requests for the same issue queue at most once in one instance", async () => {
   const f = fixture();
-  const first = queueIssueGeneration(f.client, issueId, "initial", issuesDatabaseId);
-  await assert.rejects(queueIssueGeneration(f.client, issueId.replaceAll("-", ""), "initial", issuesDatabaseId), { status: 409 });
+  const first = queueIssueGeneration(f.client, issueId, { mode: "initial" }, issuesDatabaseId);
+  await assert.rejects(queueIssueGeneration(f.client, issueId.replaceAll("-", ""), { mode: "initial" }, issuesDatabaseId), { status: 409 });
   assert.equal(await first, "Queued");
   assert.equal(f.writes.length, 1);
+});
+
+function enableScopedRequests(f) {
+  f.issue.properties["Generation request"] = lineup(null);
+  f.schema.properties["Generation request"] = { type: "rich_text", rich_text: {} };
+}
+
+function savedScopedRequest(f) {
+  assert.equal(f.writes.length, 1);
+  assert.equal(f.writes[0].page_id, issueId);
+  assert.deepEqual(f.writes[0].properties["Generation status"], { select: { id: "queued-option" } });
+  return JSON.parse(f.writes[0].properties["Generation request"].rich_text[0].text.content);
+}
+
+test("section generation sets one bounded scope and its server request ID with the Queued option", async () => {
+  const f = fixture();
+  const request = { mode: "section", section: "Field Notes" };
+  await assert.rejects(queueIssueGeneration(f.client, issueId, request, issuesDatabaseId), { status: 503 });
+  enableScopedRequests(f);
+  await queueIssueGeneration(f.client, issueId, request, issuesDatabaseId);
+  const { requestId, ...scope } = savedScopedRequest(f);
+  assert.match(requestId, /^[a-f0-9-]{36}$/);
+  assert.deepEqual(scope, request);
+  assert.deepEqual(Object.keys(f.writes[0].properties).sort(), ["Generation request", "Generation status"]);
+});
+
+test("a regular full-issue run clears old scoped request data in the queue write", async () => {
+  const f = fixture();
+  enableScopedRequests(f);
+  f.issue.properties["Generation request"] = lineup('{"mode":"section","section":"Big Idea"}');
+  await queueIssueGeneration(f.client, issueId, { mode: "initial" }, issuesDatabaseId);
+  assert.deepEqual(f.writes[0].properties["Generation request"], { rich_text: [] });
+});
+
+test("moves leave source rows alone while recording when Bonnie must keep the original", async () => {
+  for (const protection of ["none", "saved", "malformed lineup", "Keep", "Banked", "Ruled out", "Approved", "Cleared"]) {
+    const f = fixture();
+    enableScopedRequests(f);
+    if (protection === "saved") f.issue.properties["Draft lineup"] = lineup(JSON.stringify({ bigIdeaId: pieceId, teamTakeIds: [], fieldNoteId: otherId }));
+    if (protection === "malformed lineup") f.issue.properties["Draft lineup"] = lineup("Previously saved draft");
+    if (protection === "Approved") f.piece.properties.Status = select("Approved");
+    if (protection === "Cleared") f.piece.properties["Confidentiality cleared"] = { type: "checkbox", checkbox: true };
+    if (["Keep", "Banked", "Ruled out"].includes(protection)) f.piece.properties["Editorial decision"] = select(protection);
+    const originalPiece = structuredClone(f.piece);
+    const request = { mode: "move", pieceId, section: "Team take" };
+    await queueIssueGeneration(f.client, issueId, request, issuesDatabaseId, piecesDatabaseId);
+    const { requestId, ...scope } = savedScopedRequest(f);
+    assert.match(requestId, /^[a-f0-9-]{36}$/);
+    assert.deepEqual(scope, { ...request, sourceEditedTime: f.piece.last_edited_time, preserveSource: protection !== "none" });
+    assert.deepEqual(f.piece, originalPiece);
+  }
+});
+
+test("reject cross-issue, same-section and archived moves before queueing", async () => {
+  for (const [section, alter, status] of [
+    ["Big Idea", () => {}, 400],
+    ["Team take", (f) => { f.piece.properties["Related Issue"].relation[0].id = otherId; }, 409],
+    ["Team take", (f) => { f.piece.properties.Status = select("Archived"); }, 409],
+    ["Team take", (f) => { f.piece.parent.database_id = otherId; }, 404],
+  ]) {
+    const f = fixture();
+    enableScopedRequests(f);
+    alter(f);
+    await assert.rejects(queueIssueGeneration(f.client, issueId, { mode: "move", pieceId, section }, issuesDatabaseId, piecesDatabaseId), { status });
+    assert.deepEqual(f.writes, []);
+  }
 });

@@ -10,6 +10,7 @@ import { readDraftLineupProperty, resolveDraftLineup } from "./draft-lineup";
 import { readIssueDraftSnapshot } from "./issue-draft-writeback";
 import { editorAccessConfigured } from "./editor-access";
 import { issueHasGenerated } from "./issue-generation";
+import { GENERATION_REQUEST_PROPERTY } from "./generation-request";
 
 export const SIGNAL_PIECES_DB =
   process.env.NOTION_PIECES_DATABASE_ID ||
@@ -149,6 +150,7 @@ async function loadActiveIssue(notion: Client) {
     active: true,
     hasGenerated: issueHasGenerated(props),
     generationAvailable: editorAccessConfigured(),
+    scopedGenerationAvailable: editorAccessConfigured() && props[GENERATION_REQUEST_PROPERTY]?.type === "rich_text",
     draftRevision,
     draftUnavailableReason,
   };

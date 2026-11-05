@@ -85,6 +85,47 @@ h1 {
   min-width: 220px;
 }
 
+.app:has(.refresh-dock) .state-note { margin-top: 36px; }
+
+.refresh-dock {
+  position: fixed;
+  z-index: 4;
+  top: 12px;
+  right: max(12px, calc((100vw - 1320px) / 2 + 20px));
+  display: grid;
+  justify-items: end;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.refresh-dock .refresh-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 34px;
+  background: var(--navy);
+  color: var(--paper);
+  border-color: var(--navy);
+  box-shadow: var(--shadow);
+  pointer-events: auto;
+}
+
+.refresh-button:hover { background: #244268; }
+.refresh-button[aria-disabled="true"] { cursor: wait; }
+
+.refresh-message {
+  max-width: min(240px, 80vw);
+  padding: 8px 10px;
+  border: 1px solid var(--rule-2);
+  border-radius: 8px;
+  background: var(--paper);
+  color: var(--navy);
+  font-size: 12px;
+  line-height: 1.4;
+  box-shadow: var(--shadow);
+}
+
 .state-note strong {
   color: var(--navy);
   font-weight: 700;
@@ -342,24 +383,66 @@ h1 {
   overflow: clip;
 }
 
+.section-card[data-section="view"] {
+  --section-bg: #f8e8dd;
+  --section-hover: #f5ddcc;
+  --section-ink: #733716;
+}
+
+.section-card[data-section="team"] {
+  --section-bg: #e5eef8;
+  --section-hover: #d9e6f5;
+  --section-ink: #2f527e;
+}
+
+.section-card[data-section="field"] {
+  --section-bg: #e3f0e7;
+  --section-hover: #d6eade;
+  --section-ink: #2b5d40;
+}
+
+.section-header {
+  display: flex;
+  align-items: center;
+  background: var(--section-bg, var(--panel));
+}
+
 .section-title {
   display: grid;
-  grid-template-columns: 1fr auto auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   gap: 10px;
   align-items: center;
+  flex: 1 1 auto;
   width: 100%;
+  min-width: 0;
   margin: 0;
   padding: 12px;
   border: 0;
-  background: #fff;
-  color: inherit;
+  background: transparent;
+  color: var(--section-ink, var(--navy));
   font: inherit;
   text-align: left;
   cursor: pointer;
 }
 
+.section-header:has(.section-generate) .section-title {
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: 3px;
+}
+
+.section-header:has(.section-generate) .hint {
+  grid-row: 2;
+  white-space: normal;
+  text-align: left;
+}
+
+.section-header:has(.section-generate) .section-chevron {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+}
+
 .section-title:hover {
-  background: var(--panel);
+  background: var(--section-hover, var(--panel));
 }
 
 .section-title:focus-visible {
@@ -367,7 +450,7 @@ h1 {
   outline-offset: -2px;
 }
 
-.section-card.is-open .section-title {
+.section-card.is-open .section-header {
   border-bottom: 1px solid var(--rule);
 }
 
@@ -379,14 +462,14 @@ h1 {
 }
 
 .section-title .hint {
-  color: var(--muted);
+  color: inherit;
   font-size: 12px;
   font-weight: 700;
   white-space: nowrap;
 }
 
 .section-chevron {
-  color: var(--muted);
+  color: inherit;
   font-size: 12px;
   font-weight: 700;
   transition: transform .15s ease;
@@ -995,4 +1078,12 @@ h1 {
   .sec-num { font-size: 28px; }
   .sec-rail { display: none; }
   .sec-head { grid-template-columns: auto 1fr; }
+}
+
+@media (max-width: 540px) {
+  .topbar { flex-direction: column; }
+  .app:has(.refresh-dock) .topbar { padding-top: 28px; }
+  .app:has(.refresh-dock) .state-note { margin-top: 0; }
+  .section-title { gap: 6px; }
+  .section-title .hint { white-space: normal; text-align: right; }
 }

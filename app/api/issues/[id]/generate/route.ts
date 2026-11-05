@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { EditorAccessError, requireEditorAccess } from "@/lib/editor-access";
 import { isSameOriginRequest } from "@/lib/editorial-decision";
 import { IssueGenerationError, parseIssueGenerationPayload, queueIssueGeneration } from "@/lib/issue-generation";
-import { ensureNotionClient, invalidatePiecesCache, SIGNAL_ISSUES_DB } from "@/lib/notion-pieces";
+import { ensureNotionClient, invalidatePiecesCache, SIGNAL_ISSUES_DB, SIGNAL_PIECES_DB } from "@/lib/notion-pieces";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -19,10 +19,10 @@ export async function POST(request: NextRequest, context: { params: Promise<{ id
     const { id } = await context.params;
     let payload: unknown;
     try { payload = await request.json(); } catch { throw new IssueGenerationError("Invalid JSON body"); }
-    const mode = parseIssueGenerationPayload(payload);
+    const generationRequest = parseIssueGenerationPayload(payload);
     const notion = await ensureNotionClient();
     if (!notion) throw new IssueGenerationError("Connect Notion before requesting a draft", 503);
-    const status = await queueIssueGeneration(notion, id, mode, SIGNAL_ISSUES_DB);
+    const status = await queueIssueGeneration(notion, id, generationRequest, SIGNAL_ISSUES_DB, SIGNAL_PIECES_DB);
     invalidatePiecesCache();
     return NextResponse.json({ status }, { status: 202, headers });
   } catch (error) {
