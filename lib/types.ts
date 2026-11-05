@@ -1,4 +1,11 @@
+import type { PickerSelection } from "./picker-state";
+
 export type PieceType = "Big Idea" | "Team take" | "Field Notes";
+
+export type OptionBody = {
+  label: string;
+  bodyHtml: string;
+};
 
 export type Piece = {
   id: string;
@@ -6,13 +13,31 @@ export type Piece = {
   partner: string;
   type: PieceType | string;
   status: string;
+  /** Editorial curation is independent of partner approval in Status. */
+  editorialDecision?: string;
   issue: string | null;
   issueId: string | null;
   url: string;
   hasBody: boolean;
   bodyHtml: string;
+  /** Display-ready editorial pull quote, separate from the editable body. */
+  pullQuote?: string;
+  /** Section labels (Draft body / Option 1 / …) for quick checks. */
   options: string[];
+  /** Per-section bodies so the mixer can toggle Option 1 vs Option 2. */
+  optionBodies: OptionBody[];
   lastEditedTime?: string;
+};
+
+export type IssueHistoryEntry = {
+  id: string;
+  name: string;
+  url: string;
+  status: string;
+  targetSend: string | null;
+  sourceStart: string | null;
+  sourceEnd: string | null;
+  archived: boolean;
 };
 
 export type PiecesPayload = {
@@ -21,5 +46,23 @@ export type PiecesPayload = {
   refreshedAt?: string;
   source: "notion-live" | "fallback-json";
   pieces: Piece[];
+  issue: {
+    id: string;
+    title: string;
+    url: string;
+    draftLineup?: PickerSelection | null;
+    draftRevision?: string;
+    generationStatus?: string;
+    draftUnavailableReason?: string;
+    active?: boolean;
+    hasGenerated?: boolean;
+    generationAvailable?: boolean;
+    scopedGenerationAvailable?: boolean;
+    status?: string;
+    targetSend?: string | null;
+    sourceStart?: string | null;
+    sourceEnd?: string | null;
+  } | null;
   staleSeconds?: number;
+  savedDraftHtml?: string;
 };

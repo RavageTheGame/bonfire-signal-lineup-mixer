@@ -91,13 +91,20 @@ export async function GET(request: NextRequest) {
     let persistNote = "Token is active for this instance.";
     try {
       const persisted = await persistNotionTokenToVercel(token.access_token);
-      if (persisted.envUpserted) {
+      if (persisted.blobSaved && persisted.envUpserted) {
+        persistNote = persisted.redeployId
+          ? `Saved durably (Blob + Vercel env). Redeploying (<code>${persisted.redeployId}</code>).`
+          : "Saved durably (Blob + Vercel env). Open the mixer and Refresh now.";
+      } else if (persisted.blobSaved) {
+        persistNote =
+          "Saved durably to private storage. Open the mixer and hit <strong>Refresh now</strong> — live Pieces should stick across redeploys.";
+      } else if (persisted.envUpserted) {
         persistNote = persisted.redeployId
           ? `Saved to Vercel and redeploying (<code>${persisted.redeployId}</code>). Live Notion will be on in about a minute.`
           : "Saved to Vercel as <code>NOTION_TOKEN</code>. Redeploy the app to activate everywhere.";
       } else {
         persistNote =
-          "Token active in this instance only. Set <code>VERCEL_TOKEN</code> on the project to auto-save <code>NOTION_TOKEN</code>, or ask ops to paste the token into Vercel env.";
+          "Token active in this instance only. Ask ops to confirm Blob storage or <code>VERCEL_TOKEN</code> so Connect survives redeploys.";
       }
     } catch (persistError) {
       const message = persistError instanceof Error ? persistError.message : "persist failed";
